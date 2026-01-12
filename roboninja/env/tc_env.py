@@ -81,6 +81,94 @@ def get_cut_env(cfg):
     return taichi_env
 
 
+
+
+def get_strawberry_env(cfg):
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(cfg.cuda_id)
+    os.environ['TI_VISIBLE_DEVICE'] = str(cfg.cuda_id + get_vulkan_offset())
+    
+    from cut_simulation.engine.taichi_env import TaichiEnv
+    taichi_env = TaichiEnv(
+        quality=2,
+        particle_density=8e6,
+        max_steps_local=30 * cfg.gpu_type,
+        max_steps_global=30 * cfg.horizon + 1,
+        device_memory_GB=10 * cfg.gpu_type,
+        horizon=cfg.horizon
+    )
+
+    taichi_env.setup_agent(cfg.knife)
+
+    taichi_env.add_static(
+        file='chopping_board.obj',
+        pos=(0.5, 0.0, 0.5),
+        euler=(0.0, 180.0, 0.0),
+        scale=(0.5, 0.5, 0.5),
+        material=CHOPPINGBOARD,
+        has_dynamics=False,
+    )
+
+    taichi_env.add_static(
+        file='support.obj',
+        sdf_res=256,
+        pos=(0.57, 0.108, 0.5),
+        euler=(90.0, 180.0, 0.0),
+        scale=(0.1, 0.1875, 0.216),
+        material=SUPPORT,
+        has_dynamics=True,
+        render_order=None,
+    )
+
+    # taichi_env.add_static(
+    #     file=f'{cfg.bone.name}.obj',
+    #     material=BONE,
+    #     has_dynamics=True,
+    #     render_order='before',
+    #     normalize=False,
+    #     **cfg.bone
+    # )
+    taichi_env.add_body(
+        type='splat',
+        file=cfg.strawberry.splat_path,     # <-- you provide this path
+        pos=cfg.strawberry.pos,             # e.g. (0.50, 0.12, 0.50)
+        scale=cfg.strawberry.scale,         # e.g. (0.18, 0.18, 0.18)
+        euler=getattr(cfg.strawberry, 'euler', (0.0, 0.0, 0.0)),
+        voxelize_res=getattr(cfg.strawberry, 'voxelize_res', 256),
+        shell_radius_vox=getattr(cfg.strawberry, 'shell_radius_vox', 2),
+        close_iters=getattr(cfg.strawberry, 'close_iters', 2),
+        normalize=getattr(cfg.strawberry, 'normalize', True),
+        trim_percentile=getattr(cfg.strawberry, 'trim_percentile', 0.5),
+        cache_voxels=getattr(cfg.strawberry, 'cache_voxels', True),
+
+        material=MEAT,  # or define a STRAWBERRY material in macros if you want
+        obstacles=[taichi_env.statics[2]],  # keep your original indexing if it’s correct in your env
+    )
+
+    # --- Boundary (keep your original or auto-size) ---
+    if getattr(cfg, "auto_boundary", False):
+        st_pos = np.array(cfg.strawberry.pos, dtype=np.float32)
+        st_scale = np.array(cfg.strawberry.scale, dtype=np.float32)
+        margin = np.array([0.10, 0.10, 0.10], dtype=np.float32)
+
+        lower = np.maximum(st_pos - 0.5 * st_scale - margin, np.array([0.05, 0.025, 0.05], dtype=np.float32))
+        upper = np.minimum(st_pos + 0.5 * st_scale + margin, np.array([0.95, 0.95, 0.95], dtype=np.float32))
+
+        taichi_env.setup_boundary(type='cube', lower=tuple(lower), upper=tuple(upper))
+    else:
+        taichi_env.setup_boundary(
+            type='cube',
+            lower=(0.05, 0.025, 0.05),
+            upper=(0.95, 0.95, 0.95),
+        )
+    if cfg.render is not None:
+        taichi_env.setup_renderer(**cfg.render)
+
+    taichi_env.setup_loss(weights=cfg.loss_weight
+    )
+    taichi_env.build()
+    
+    return taichi_env
+
 class StepType(enum.Enum):
     Forward = 0
     Cancel = 1
@@ -236,3 +324,7 @@ class TCEnv(BaseEnv):
             'energy_array': energy_array
         }
         return energy_info
+
+
+
+

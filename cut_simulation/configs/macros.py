@@ -68,6 +68,40 @@ YIELD_STRESS = {
     MEAT: 200.0,
 }
 
+
+############ material type #############
+RIGID = 0
+MEAT = 1
+STRAWBERRY = 2
+
+############ material name #############
+MAT_NAME = {
+    RIGID: 'rigid',
+    MEAT: 'meat',
+    STRAWBERRY: 'strawberry',
+}
+
+############ material class #############
+MAT_CLASS = {
+    RIGID: MAT_RIGID,
+    MEAT: MAT_PLASTO_ELASTIC,
+    STRAWBERRY: MAT_PLASTO_ELASTIC,
+}
+
+############ default color #############
+COLOR[STRAWBERRY] = (1, 0.6, 0.6, 1.0)  # optional
+
+############ properties #############
+MU[STRAWBERRY] = 900.0
+LAMDA[STRAWBERRY] = 600.0
+RHO[STRAWBERRY] = 1.0
+YIELD_STRESS[STRAWBERRY] = 80.0
+
+
+FRICTION[CHOPPINGBOARD] = 0.05
+FRICTION[KNIFE] = 0.05
+
+
 ############ dtype #############
 import numpy as np
 import torch
