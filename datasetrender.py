@@ -296,14 +296,15 @@ TAIL_SECONDS = 0.0
 
 MJCF_PATH  = "./robot_urdf_genesis/scene.xml"
 # --- MODIFIED: Added path for the separate object XML ---
-OBJECT_MJCF_PATH = "./robot_urdf_genesis/draw.xml"
+OBJECT_MJCF_PATH = "./fruit_asset/strawberry.xml.xml"
 # --- END MODIFIED ---
 
-nova2_path = "./strawberry2/nova2.txt"
-nova5_path = "./strawberry2/nova5.txt"
-left_path  = "./strawberry2/left.txt"
-right_path = "./strawberry2/right.txt"
-video_out  = Path("renders") / "draw_t1_sim.mp4"
+
+nova2_path = "./data/strawberry_control_data/strawberry3/nova2.txt"
+nova5_path = "./data/strawberry_control_data/strawberry3/nova5.txt"
+left_path  = "./data/strawberry_control_data/strawberry3/left.txt"
+right_path = "./data/strawberry_control_data/strawberry3/right.txt"
+video_out  = Path("renders") / "draw_strawberry.mp4"
 
 if __name__ == "__main__":
     video_out.parent.mkdir(parents=True, exist_ok=True)

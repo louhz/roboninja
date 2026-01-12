@@ -148,3 +148,7 @@ dmypy.json
 generated*
 
 *.mp4
+
+*.txt
+
+*.zip
