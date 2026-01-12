@@ -1,0 +1,49 @@
+<mujoco model="graspable2_objects">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+  
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.001"
+          cone="pyramidal" impratio="5" tolerance="1e-8">
+    <flag warmstart="enable"/>
+  </option>
+
+  <asset>
+    <mesh name="door1" file="meshes/door/door_1.stl"/>
+    <mesh name="door2" file="meshes/door/door_2.stl"/>
+    <material name="rubber" rgba="0.0 0.4 0.5 1"/>
+  </asset>
+
+  <default>
+    <!-- 物体默认属性：高摩擦系数 -->
+    <geom type="mesh" 
+          friction="2.5 0.1 0.005"
+          solref="0.002 1" 
+          solimp="0.95 0.99 0.001"
+          condim="4"
+          contype="1" 
+          conaffinity="1"/>
+  </default>
+
+  <worldbody>
+    
+    <!-- box1: Movable object with proper inertial properties -->
+    <body name="door1" pos="0.558 -0.43 0.196" quat="-0.642433 0.013966 0.001613 0.766213">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="door1_geom" type="mesh" mesh="door1" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+    <!-- boxx2: Static object (no joint), with inertial for stability -->
+    <body name="door2" pos="0.12 -0.43 0.292" quat="0.680713 0.082401 0.722724 -0.086659">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="door2_geom" type="mesh" mesh="door2" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+  </worldbody>
+</mujoco>

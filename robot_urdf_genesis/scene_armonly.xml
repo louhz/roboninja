@@ -1,0 +1,276 @@
+<mujoco model="nova_dual_scene_colored_with_hands">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false" />
+  <size nuserdata="0" nuser_actuator="0" nconmax="500" njmax="2000"/>
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.002"
+          cone="pyramidal" impratio="5" tolerance="1e-8"/>
+
+  <visual>
+    <quality shadowsize="2048" offsamples="8"/>
+    <rgba haze="0.1 0.1 0.1 1" />
+  </visual>
+
+  <default>
+    <geom type="mesh" contype="1" conaffinity="1" friction="1 0.005 0.0001"/>
+    <joint type="hinge" damping="0.05" limited="true"/>
+    <motor ctrllimited="true" ctrlrange="-1 1" gear="1"/>
+    <light cutoff="100" exponent="1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" ambient="0.2 0.2 0.2"/>
+  </default>
+
+  <asset>
+    <texture name="texplane" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.82 0.84 0.87" rgb2="0.92 0.93 0.95"/>
+    <material name="matplane" texture="texplane" texrepeat="4 4" reflectance="0.1"/>
+
+    <material name="mat_n2" rgba="0.165 0.616 0.561 1" specular="0.40" shininess="0.30" reflectance="0.05"/>
+    <material name="mat_n5" rgba="0.906 0.435 0.318 1" specular="0.40" shininess="0.30" reflectance="0.05"/>
+    <material name="mat_ee" rgba="0.80 0.80 0.82 1"  specular="0.30" shininess="0.70" reflectance="0.10"/>
+    <material name="mat_hand" rgba="0.95 0.95 0.97 1" specular="0.30" shininess="0.70" reflectance="0.10"/>
+    <material name="mat_hand_dark" rgba="0.4 0.4 0.4 1" specular="0.30" shininess="0.70" reflectance="0.10"/>
+
+
+    <mesh name="n2_base_link" file="meshes/nova2/base_link.STL"/>
+    <mesh name="n2_Link1"     file="meshes/nova2/Link1.STL"/>
+    <mesh name="n2_Link2"     file="meshes/nova2/Link2.STL"/>
+    <mesh name="n2_Link3"     file="meshes/nova2/Link3.STL"/>
+    <mesh name="n2_Link4"     file="meshes/nova2/Link4.STL"/>
+    <mesh name="n2_Link5"     file="meshes/nova2/Link5.STL"/>
+    <mesh name="n2_Link6"     file="meshes/nova2/Link6.STL"/>
+
+    <mesh name="ee_link1" file="meshes/ee_link/ee_link1.STL" scale="0.001 0.001 0.001"/>
+    <mesh name="ee_link2" file="meshes/ee_link/ee_link2.STL" scale="0.001 0.001 0.001"/>
+    <mesh name="ee_link3" file="meshes/ee_link/ee_link3.STL" scale="0.001 0.001 0.001"/>
+
+    <mesh name="n5_base_link" file="meshes/nova5/base_link.STL"/>
+    <mesh name="n5_Link1"     file="meshes/nova5/Link1.STL"/>
+    <mesh name="n5_Link2"     file="meshes/nova5/Link2.STL"/>
+    <mesh name="n5_Link3"     file="meshes/nova5/Link3.STL"/>
+    <mesh name="n5_Link4"     file="meshes/nova5/Link4.STL"/>
+    <mesh name="n5_Link5"     file="meshes/nova5/Link5.STL"/>
+    <mesh name="n5_Link6"     file="meshes/nova5/Link6.STL"/>
+
+    <mesh name="R_hand_base_link"          file="meshes/hand_R/hand_base_link.STL" />
+    <mesh name="R_thumb_metacarpals_base1" file="meshes/hand_R/thumb_metacarpals_base1.STL" />
+    <mesh name="R_thumb_metacarpals_base2" file="meshes/hand_R/thumb_metacarpals_base2.STL" />
+    <mesh name="R_thumb_metacarpals"       file="meshes/hand_R/thumb_metacarpals.STL" />
+    <mesh name="R_thumb_proximal"          file="meshes/hand_R/thumb_proximal.STL" />
+    <mesh name="R_thumb_distal"            file="meshes/hand_R/thumb_distal.STL" />
+    <mesh name="R_index_metacarpals"       file="meshes/hand_R/index_metacarpals.STL" />
+    <mesh name="R_index_proximal"          file="meshes/hand_R/index_proximal.STL" />
+    <mesh name="R_index_middle"            file="meshes/hand_R/index_middle.STL" />
+    <mesh name="R_index_distal"            file="meshes/hand_R/index_distal.STL" />
+    <mesh name="R_middle_proximal"         file="meshes/hand_R/middle_proximal.STL" />
+    <mesh name="R_middle_middle"           file="meshes/hand_R/middle_middle.STL" />
+    <mesh name="R_middle_distal"           file="meshes/hand_R/middle_distal.STL" />
+    <mesh name="R_ring_metacarpals"        file="meshes/hand_R/ring_metacarpals.STL" />
+    <mesh name="R_ring_proximal"           file="meshes/hand_R/ring_proximal.STL" />
+    <mesh name="R_ring_middle"             file="meshes/hand_R/ring_middle.STL" />
+    <mesh name="R_ring_distal"             file="meshes/hand_R/ring_distal.STL" />
+    <mesh name="R_pinky_metacarpals"       file="meshes/hand_R/pinky_metacarpals.STL" />
+    <mesh name="R_pinky_proximal"          file="meshes/hand_R/pinky_proximal.STL" />
+    <mesh name="R_pinky_middle"            file="meshes/hand_R/pinky_middle.STL" />
+    <mesh name="R_pinky_distal"            file="meshes/hand_R/pinky_distal.STL" />
+
+    <mesh name="L_hand_base_link"          file="meshes/hand_L/hand_base_link.STL" />
+    <mesh name="L_thumb_metacarpals_base1" file="meshes/hand_L/thumb_metacarpals_base1.STL" />
+    <mesh name="L_thumb_metacarpals_base2" file="meshes/hand_L/thumb_metacarpals_base2.STL" />
+    <mesh name="L_thumb_metacarpals"       file="meshes/hand_L/thumb_metacarpals.STL" />
+    <mesh name="L_thumb_proximal"          file="meshes/hand_L/thumb_proximal.STL" />
+    <mesh name="L_thumb_distal"            file="meshes/hand_L/thumb_distal.STL" />
+    <mesh name="L_index_metacarpals"       file="meshes/hand_L/index_metacarpals.STL" />
+    <mesh name="L_index_proximal"          file="meshes/hand_L/index_proximal.STL" />
+    <mesh name="L_index_middle"            file="meshes/hand_L/index_middle.STL" />
+    <mesh name="L_index_distal"            file="meshes/hand_L/index_distal.STL" />
+    <mesh name="L_middle_proximal"         file="meshes/hand_L/middle_proximal.STL" />
+    <mesh name="L_middle_middle"           file="meshes/hand_L/middle_middle.STL" />
+    <mesh name="L_middle_distal"           file="meshes/hand_L/middle_distal.STL" />
+    <mesh name="L_ring_metacarpals"        file="meshes/hand_L/ring_metacarpals.STL" />
+    <mesh name="L_ring_proximal"           file="meshes/hand_L/ring_proximal.STL" />
+    <mesh name="L_ring_middle"             file="meshes/hand_L/ring_middle.STL" />
+    <mesh name="L_ring_distal"             file="meshes/hand_L/ring_distal.STL" />
+    <mesh name="L_pinky_metacarpals"       file="meshes/hand_L/pinky_metacarpals.STL" />
+    <mesh name="L_pinky_proximal"          file="meshes/hand_L/pinky_proximal.STL" />
+    <mesh name="L_pinky_middle"            file="meshes/hand_L/pinky_middle.STL" />
+    <mesh name="L_pinky_distal"            file="meshes/hand_L/pinky_distal.STL" />
+
+  </asset>
+<worldbody>
+
+  <geom name="ground" type="plane" size="5 5 0.1" pos="0 0 0" material="matplane"/>
+
+  <light name="top_light"  pos="0.45 0 2.2"  dir="0 0 -1" directional="true"/>
+  <light name="fill_light" pos="-1.0 -1.2 1.2" dir="0.6 0.6 -1" directional="true" diffuse="0.6 0.6 0.6"/>
+
+  <camera name="front" pos="1.80 0.00 0.70" euler="0 0 3.1416"/>
+  <camera name="top"   pos="0.45 0.00 2.00" euler="-1.5708 0 0"/>
+  <camera name="iso"   pos="1.40 -1.10 1.00" euler="-0.35 0 2.45"/>
+
+  <!-- ======================= NOVA2 ======================= -->
+  <body name="nova2base_link" pos="0 0 0">
+    <inertial pos="1.31739e-05 -7.8496e-06 0.064777" mass="0.93987"
+              fullinertia="0.0019168 0.0019228 0.0012727 -3.45738e-07 7.09346e-07 -4.56838e-07"/>
+    <geom mesh="n2_base_link" material="mat_n2"/>
+
+    <body name="nova2Link1" pos="0 0 0.2234">
+      <inertial pos="-5.44523e-07 -0.021872 -0.023624" mass="0.80337"
+                fullinertia="0.0016795 0.0014697 0.0010371 1.54449e-07 6.95728e-08 0.00044202"/>
+      <joint name="nova2joint1" axis="0 0 1" range="-6.28 6.28"/>
+      <geom mesh="n2_Link1" material="mat_n2"/>
+
+      <body name="nova2Link2" pos="0 0 0" quat="0.499998 0.5 0.5 -0.500002">
+        <inertial pos="-0.15031 4.18878e-06 0.093145" mass="1.57816"
+                  fullinertia="0.0015667 0.02164 0.021736 -1.5729e-07 -0.0011524 -1.09921e-07"/>
+        <joint name="nova2joint2" axis="0 0 1" range="-3.14 3.14"/>
+        <geom mesh="n2_Link2" material="mat_n2"/>
+
+        <body name="nova2Link3" pos="-0.28 0 0">
+          <inertial pos="-0.1183 3.912e-06 0.011301" mass="0.99867"
+                    fullinertia="0.00077571 0.009382 0.0094012 4.71332e-08 0.00054359 6.8262e-08"/>
+          <joint name="nova2joint3" axis="0 0 1" range="-2.79 2.79"/>
+          <geom mesh="n2_Link3" material="mat_n2"/>
+
+          <body name="nova2Link4" pos="-0.22501 0 0.1175" euler="0 0 -1.5708">
+            <inertial pos="-7.47431e-06 -0.022655 -0.020459" mass="0.44161"
+                      fullinertia="0.00064117 0.00045537 0.00048272 1.23888e-08 3.0249e-08 0.00021328"/>
+            <joint name="nova2joint4" axis="0 0 1" range="-6.28 6.28"/>
+            <geom mesh="n2_Link4" material="mat_n2"/>
+
+            <body name="nova2Link5" pos="0 -0.12 0" euler="1.5708 0 0">
+              <inertial pos="-2.62723e-06 0.001913 -0.0076112" mass="0.57484"
+                        fullinertia="0.00066318 0.00039752 0.00064116 1.50481e-08 1.31861e-08 -0.00012026"/>
+              <joint name="nova2joint5" axis="0 0 1" range="-6.28 6.28"/>
+              <geom mesh="n2_Link5" material="mat_n2"/>
+
+              <body name="nova2Link6" pos="0 0.088004 0" euler="-1.5708 0 0">
+                <inertial pos="-4.63325e-07 -4.9271e-05 -0.019692" mass="0.12425"
+                          fullinertia="4.97045e-05 4.99146e-05 7.67223e-05 1.38276e-11 -2.6897e-11 5.03764e-08"/>
+                <joint name="nova2joint6" axis="0 0 1" range="-6.28 6.28"/>
+                <geom mesh="n2_Link6" material="mat_n2"/>
+
+                <!-- EE stack -->
+                <body name="nova2ee_link1" pos="0 0 0">
+                  <!-- ~50 g bracket -->
+                  <inertial pos="0 0 0" mass="0.05" diaginertia="1.7e-05 8.0e-06 1.7e-05"/>
+                  <geom mesh="ee_link1" material="mat_ee" contype="0" conaffinity="0"/>
+
+                  <body name="nova2ee_link2" pos="0 0 0.006">
+                    <!-- ~40 g spacer -->
+                    <inertial pos="0 0 0" mass="0.04" diaginertia="1.2e-05 6.0e-06 1.2e-05"/>
+                    <geom mesh="ee_link2" material="mat_ee" contype="0" conaffinity="0"/>
+
+                    <body name="nova2ee_link3" pos="0 0 0.007">
+                      <!-- ~30 g tip plate -->
+                      <inertial pos="0 0 0" mass="0.03" diaginertia="1.0e-05 5.0e-06 1.0e-05"/>
+                      <geom mesh="ee_link3" material="mat_ee" contype="0" conaffinity="0"/>
+                      <site name="n2_ee" type="sphere" size="0.01" rgba="1 0 0 1" pos="0 0 0"/>
+                    </body> <!-- nova2ee_link3 -->
+
+                  </body> <!-- nova2ee_link2 -->
+                </body>   <!-- nova2ee_link1 -->
+
+              </body> <!-- nova2Link6 -->
+            </body>   <!-- nova2Link5 -->
+          </body>     <!-- nova2Link4 -->
+        </body>       <!-- nova2Link3 -->
+      </body>         <!-- nova2Link2 -->
+    </body>           <!-- nova2Link1 -->
+  </body>             <!-- nova2base_link -->
+
+  <!-- ======================= NOVA5 ======================= -->
+  <body name="nova5base_link" pos="0.9035 -0.003 0">
+    <inertial pos="6.567e-06 2.7305e-06 0.069822" mass="1.31064"
+              fullinertia="0.0030811 0.0030976 0.0023284 -4.037e-08 5.26077e-07 -6.3748e-09"/>
+    <geom mesh="n5_base_link" material="mat_n5"/>
+
+    <body name="nova5Link1" pos="0 0 0.24">
+      <inertial pos="9.1864e-06 -0.021771 -0.026183" mass="1.08091"
+                fullinertia="0.0026596 0.0024734 0.0016474 1.85196e-07 -3.2772e-07 0.00066133"/>
+      <joint name="nova5joint1" axis="0 0 1" range="-6.28 6.28"/>
+      <geom mesh="n5_Link1" material="mat_n5"/>
+
+      <body name="nova5Link2" pos="0 0 0" quat="-0.491193 -0.49119 -0.508657 0.508654">
+        <inertial pos="-0.19934 -0.0069646 0.10921" mass="2.54585"
+                  fullinertia="0.0028519 0.063677 0.064301 -0.0021278 -0.0010991 -3.83872e-05"/>
+        <joint name="nova5joint2" axis="0 0 1" range="-3.14 3.14"/>
+        <geom mesh="n5_Link2" material="mat_n5"/>
+
+        <body name="nova5Link3" pos="-0.399756009268664 -0.0139690033141953 0">
+          <inertial pos="-0.15236 -0.0053572 0.019899" mass="1.40746"
+                    fullinertia="0.001008 0.023174 0.0236 -0.00077547 4.43267e-05 1.31338e-06"/>
+          <joint name="nova5joint3" axis="0 0 1" range="-2.79 2.79"/>
+          <geom mesh="n5_Link3" material="mat_n5"/>
+
+          <body name="nova5Link4" pos="-0.329798707647103 -0.0115244277211674 0.134999532858734" euler="0 0 -1.53586622840712">
+            <inertial pos="-6.3711e-06 -0.022759 -0.020238" mass="0.43967"
+                      fullinertia="0.00063474 0.00045014 0.00048031 1.33529e-08 2.91413e-08 0.00021092"/>
+            <joint name="nova5joint4" axis="0 0 1" range="-6.28 6.28"/>
+            <geom mesh="n5_Link4" material="mat_n5"/>
+
+            <body name="nova5Link5" pos="0 -0.12 0" euler="1.5708 0 0">
+              <inertial pos="-1.2793e-06 0.0019091 -0.0076112" mass="0.57484"
+                        fullinertia="0.00066318 0.00039752 0.00064116 1.30179e-08 1.2267e-08 -0.00012026"/>
+              <joint name="nova5joint5" axis="0 0 1" range="-6.28 6.28"/>
+              <geom mesh="n5_Link5" material="mat_n5"/>
+
+              <body name="nova5Link6" pos="0 0.088328 0" euler="-1.5708 0 0">
+                <inertial pos="1.5476e-06 0.0001516 -0.019459" mass="0.12968"
+                          fullinertia="5.02803e-05 5.054e-05 7.7863e-05 6.27222e-11 3.51287e-12 5.03437e-08"/>
+                <joint name="nova5joint6" axis="0 0 1" range="-6.28 6.28"/>
+                <geom mesh="n5_Link6" material="mat_n5"/>
+
+                <!-- EE stack -->
+                <body name="nova5ee_link1" pos="0 0 0">
+                  <inertial pos="0 0 0" mass="0.05" diaginertia="1.7e-05 8.0e-06 1.7e-05"/>
+                  <geom mesh="ee_link1" material="mat_ee" contype="0" conaffinity="0"/>
+
+                  <body name="nova5ee_link2" pos="0 0 0.006">
+                    <inertial pos="0 0 0" mass="0.04" diaginertia="1.2e-05 6.0e-06 1.2e-05"/>
+                    <geom mesh="ee_link2" material="mat_ee" contype="0" conaffinity="0"/>
+
+                    <body name="nova5ee_link3" pos="0 0 0.007">
+                      <inertial pos="0 0 0" mass="0.03" diaginertia="1.0e-05 5.0e-06 1.0e-05"/>
+                      <geom mesh="ee_link3" material="mat_ee" contype="0" conaffinity="0"/>
+                      <site name="n5_ee" type="sphere" size="0.01" rgba="0 0 1 1" pos="0 0 0"/>
+                    </body> <!-- nova5ee_link3 -->
+
+                  </body> <!-- nova5ee_link2 -->
+                </body>   <!-- nova5ee_link1 -->
+
+              </body> <!-- nova5Link6 -->
+            </body>   <!-- nova5Link5 -->
+          </body>     <!-- nova5Link4 -->
+        </body>       <!-- nova5Link3 -->
+      </body>         <!-- nova5Link2 -->
+    </body>           <!-- nova5Link1 -->
+  </body>             <!-- nova5base_link -->
+
+</worldbody>
+  
+ 
+<actuator>
+  <!-- NOVA2 : joints 1–3 tighter; 4 unchanged -->
+  <position name="m_nova2joint1" joint="nova2joint1" kp="120" kv="21.9" ctrlrange="-6.28 6.28" forcerange="-150 150"/>
+  <position name="m_nova2joint2" joint="nova2joint2" kp="120" kv="21.9" ctrlrange="-3.14  3.14" forcerange="-150 150"/>
+  <position name="m_nova2joint3" joint="nova2joint3" kp="90"  kv="19.0" ctrlrange="-2.79  2.79" forcerange="-110 110"/>
+  <position name="m_nova2joint4" joint="nova2joint4" kp="40"  kv="12.65" ctrlrange="-6.28  6.28" forcerange="-60  60"/>
+
+  <!-- NOVA2 : wrist joints (as you had) -->
+  <position name="m_nova2joint5" joint="nova2joint5" kp="18" kv="12.73" ctrlrange="-6.28  6.28" forcerange="-35  35"/>
+  <position name="m_nova2joint6" joint="nova2joint6" kp="12" kv="10.39" ctrlrange="-6.28  6.28" forcerange="-22  22"/>
+
+  <!-- NOVA5 : joints 1–3 tighter; 4 unchanged -->
+  <position name="m_nova5joint1" joint="nova5joint1" kp="120" kv="21.9" ctrlrange="-6.28 6.28" forcerange="-150 150"/>
+  <position name="m_nova5joint2" joint="nova5joint2" kp="120" kv="21.9" ctrlrange="-3.14  3.14" forcerange="-150 150"/>
+  <position name="m_nova5joint3" joint="nova5joint3" kp="90"  kv="19.0" ctrlrange="-2.79  2.79" forcerange="-110 110"/>
+  <position name="m_nova5joint4" joint="nova5joint4" kp="40"  kv="12.65" ctrlrange="-6.28  6.28" forcerange="-60  60"/>
+
+  <!-- NOVA5 : wrist joints (as you had) -->
+  <position name="m_nova5joint5" joint="nova5joint5" kp="18" kv="12.73" ctrlrange="-6.28  6.28" forcerange="-35  35"/>
+  <position name="m_nova5joint6" joint="nova5joint6" kp="12" kv="10.39" ctrlrange="-6.28  6.28" forcerange="-22  22"/>
+</actuator>
+
+</mujoco>

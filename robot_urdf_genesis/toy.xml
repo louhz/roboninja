@@ -1,0 +1,49 @@
+<mujoco model="graspable3_objects">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+  
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.001"
+          cone="pyramidal" impratio="5" tolerance="1e-8">
+    <flag warmstart="enable"/>
+  </option>
+
+  <asset>
+    <mesh name="toy1" file="meshes/toy/qq_1.stl"/>
+    <mesh name="toy2" file="meshes/toy/qq_2.stl"/>
+    <material name="rubber" rgba="0.0 0.4 0.5 1"/>
+  </asset>
+
+  <default>
+    <!-- 物体默认属性：高摩擦系数 -->
+    <geom type="mesh" 
+          friction="2.5 0.1 0.005"
+          solref="0.002 1" 
+          solimp="0.95 0.99 0.001"
+          condim="4"
+          contype="1" 
+          conaffinity="1"/>
+  </default>
+
+  <worldbody>
+    
+    <!-- draw1: Movable object with proper inertial properties -->
+    <body name="toy1" pos="0.41 -0.44 0.196" quat="0.670741 0.700534 -0.137861 -0.200879">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="toy1_geom" type="mesh" mesh="toy1" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+    <!-- draw2: Static object (no joint), with inertial for stability -->
+    <body name="toy2" pos="0.575 -0.55 0.196" quat="0.962243 -0.037946 -0.020384 -0.268762">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="toy2_geom" type="mesh" mesh="toy2" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+  </worldbody>
+</mujoco>

@@ -1,0 +1,692 @@
+<mujoco model="nova_dual_scene_colored_with_hands">
+  <!-- <include file="/wl/projects/cad2real_600/robot_urdf/object.xml"/> -->
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+  <size nuserdata="0" nuser_actuator="0" nconmax="500" njmax="2000"/>
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.001"
+          cone="pyramidal" impratio="5" tolerance="1e-8"/>
+
+  <visual>
+    <global offwidth="960" offheight="640"/>
+    <quality shadowsize="2048" offsamples="8"/>
+    <rgba haze="0.1 0.1 0.1 1" />
+  </visual>
+
+  <default>
+    <geom type="mesh" contype="1" conaffinity="1" friction="1 0.005 0.0001"/>
+    <joint type="hinge" damping="0.05" limited="true"/>
+    <motor ctrllimited="true" ctrlrange="-1 1" gear="1"/>
+    <light cutoff="100" exponent="1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" ambient="0.2 0.2 0.2"/>
+  </default>
+
+  <asset>
+    <texture name="texplane" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.82 0.84 0.87" rgb2="0.92 0.93 0.95"/>
+    <material name="matplane" texture="texplane" texrepeat="4 4" reflectance="0.1"/>
+
+    <material name="mat_n2" rgba="0.165 0.616 0.561 1" specular="0.40" shininess="0.30" reflectance="0.05"/>
+    <material name="mat_n5" rgba="0.906 0.435 0.318 1" specular="0.40" shininess="0.30" reflectance="0.05"/>
+    <material name="mat_ee" rgba="0.80 0.80 0.82 1"  specular="0.30" shininess="0.70" reflectance="0.10"/>
+    <material name="mat_hand" rgba="0.95 0.95 0.97 1" specular="0.30" shininess="0.70" reflectance="0.10"/>
+    <material name="mat_hand_dark" rgba="0.4 0.4 0.4 1" specular="0.30" shininess="0.70" reflectance="0.10"/>
+
+    <mesh name="draw1" file="meshes/Draw/draw1.stl"/>
+    <mesh name="draw2" file="meshes/Draw/draw2.stl"/>
+
+    <mesh name="n2_base_link" file="meshes/nova2/base_link.STL"/>
+    <mesh name="n2_Link1"     file="meshes/nova2/Link1.STL"/>
+    <mesh name="n2_Link2"     file="meshes/nova2/Link2.STL"/>
+    <mesh name="n2_Link3"     file="meshes/nova2/Link3.STL"/>
+    <mesh name="n2_Link4"     file="meshes/nova2/Link4.STL"/>
+    <mesh name="n2_Link5"     file="meshes/nova2/Link5.STL"/>
+    <mesh name="n2_Link6"     file="meshes/nova2/Link6.STL"/>
+
+    <mesh name="ee_link1" file="meshes/ee_link/ee_link1.STL" scale="0.001 0.001 0.001"/>
+    <mesh name="ee_link2" file="meshes/ee_link/ee_link2.STL" scale="0.001 0.001 0.001"/>
+    <mesh name="ee_link3" file="meshes/ee_link/ee_link3.STL" scale="0.001 0.001 0.001"/>
+
+    <mesh name="n5_base_link" file="meshes/nova5/base_link.STL"/>
+    <mesh name="n5_Link1"     file="meshes/nova5/Link1.STL"/>
+    <mesh name="n5_Link2"     file="meshes/nova5/Link2.STL"/>
+    <mesh name="n5_Link3"     file="meshes/nova5/Link3.STL"/>
+    <mesh name="n5_Link4"     file="meshes/nova5/Link4.STL"/>
+    <mesh name="n5_Link5"     file="meshes/nova5/Link5.STL"/>
+    <mesh name="n5_Link6"     file="meshes/nova5/Link6.STL"/>
+
+    <mesh name="R_hand_base_link"          file="meshes/hand_R/hand_base_link.STL" />
+    <mesh name="R_thumb_metacarpals_base1" file="meshes/hand_R/thumb_metacarpals_base1.STL" />
+    <mesh name="R_thumb_metacarpals_base2" file="meshes/hand_R/thumb_metacarpals_base2.STL" />
+    <mesh name="R_thumb_metacarpals"       file="meshes/hand_R/thumb_metacarpals.STL" />
+    <mesh name="R_thumb_proximal"          file="meshes/hand_R/thumb_proximal.STL" />
+    <mesh name="R_thumb_distal"            file="meshes/hand_R/thumb_distal.STL" />
+    <mesh name="R_index_metacarpals"       file="meshes/hand_R/index_metacarpals.STL" />
+    <mesh name="R_index_proximal"          file="meshes/hand_R/index_proximal.STL" />
+    <mesh name="R_index_middle"            file="meshes/hand_R/index_middle.STL" />
+    <mesh name="R_index_distal"            file="meshes/hand_R/index_distal.STL" />
+    <mesh name="R_middle_proximal"         file="meshes/hand_R/middle_proximal.STL" />
+    <mesh name="R_middle_middle"           file="meshes/hand_R/middle_middle.STL" />
+    <mesh name="R_middle_distal"           file="meshes/hand_R/middle_distal.STL" />
+    <mesh name="R_ring_metacarpals"        file="meshes/hand_R/ring_metacarpals.STL" />
+    <mesh name="R_ring_proximal"           file="meshes/hand_R/ring_proximal.STL" />
+    <mesh name="R_ring_middle"             file="meshes/hand_R/ring_middle.STL" />
+    <mesh name="R_ring_distal"             file="meshes/hand_R/ring_distal.STL" />
+    <mesh name="R_pinky_metacarpals"       file="meshes/hand_R/pinky_metacarpals.STL" />
+    <mesh name="R_pinky_proximal"          file="meshes/hand_R/pinky_proximal.STL" />
+    <mesh name="R_pinky_middle"            file="meshes/hand_R/pinky_middle.STL" />
+    <mesh name="R_pinky_distal"            file="meshes/hand_R/pinky_distal.STL" />
+
+    <mesh name="L_hand_base_link"          file="meshes/hand_L/hand_base_link.STL" />
+    <mesh name="L_thumb_metacarpals_base1" file="meshes/hand_L/thumb_metacarpals_base1.STL" />
+    <mesh name="L_thumb_metacarpals_base2" file="meshes/hand_L/thumb_metacarpals_base2.STL" />
+    <mesh name="L_thumb_metacarpals"       file="meshes/hand_L/thumb_metacarpals.STL" />
+    <mesh name="L_thumb_proximal"          file="meshes/hand_L/thumb_proximal.STL" />
+    <mesh name="L_thumb_distal"            file="meshes/hand_L/thumb_distal.STL" />
+    <mesh name="L_index_metacarpals"       file="meshes/hand_L/index_metacarpals.STL" />
+    <mesh name="L_index_proximal"          file="meshes/hand_L/index_proximal.STL" />
+    <mesh name="L_index_middle"            file="meshes/hand_L/index_middle.STL" />
+    <mesh name="L_index_distal"            file="meshes/hand_L/index_distal.STL" />
+    <mesh name="L_middle_proximal"         file="meshes/hand_L/middle_proximal.STL" />
+    <mesh name="L_middle_middle"           file="meshes/hand_L/middle_middle.STL" />
+    <mesh name="L_middle_distal"           file="meshes/hand_L/middle_distal.STL" />
+    <mesh name="L_ring_metacarpals"        file="meshes/hand_L/ring_metacarpals.STL" />
+    <mesh name="L_ring_proximal"           file="meshes/hand_L/ring_proximal.STL" />
+    <mesh name="L_ring_middle"             file="meshes/hand_L/ring_middle.STL" />
+    <mesh name="L_ring_distal"             file="meshes/hand_L/ring_distal.STL" />
+    <mesh name="L_pinky_metacarpals"       file="meshes/hand_L/pinky_metacarpals.STL" />
+    <mesh name="L_pinky_proximal"          file="meshes/hand_L/pinky_proximal.STL" />
+    <mesh name="L_pinky_middle"            file="meshes/hand_L/pinky_middle.STL" />
+    <mesh name="L_pinky_distal"            file="meshes/hand_L/pinky_distal.STL" />
+    <material name="rubber" rgba="0.0 0.4 0.5 1"/>
+  </asset>
+
+
+  <worldbody>
+
+    <geom name="ground" type="plane" size="5 5 0.1" pos="0 0 -0.1" material="matplane"/>
+
+    <light name="top_light" pos="0.45 0 2.2" dir="0 0 -1" directional="true"/>
+    <light name="fill_light" pos="-1.0 -1.2 1.2" dir="0.6 0.6 -1" directional="true" diffuse="0.6 0.6 0.6"/>
+
+    <camera name="front"    pos="1.80 0.00 0.70" euler="0 0 3.1416"/>
+    <camera name="top"      pos="0.45 0.00 2.00" euler="-1.5708 0 0"/>
+    <camera name="iso"      pos="1.40 -1.10 1.00" euler="-0.35 0 2.45"/>
+
+    <body name="table" pos="0.45175 -0.5 0.19" quat="1 0 0 0">
+      <geom name="table" type="box" size="0.4 0.2 0.006" rgba="0.3 0.3 0.3 0" mass="0.1" contype="1" conaffinity="1"/>
+      <geom name="leg1" type="cylinder" pos="-0.37 0.17 -0.0980" size="0.01 0.0920" rgba="0.3 0.3 0.3 0"/>
+      <geom name="leg2" type="cylinder" pos="0.37 0.17 -0.0980" size="0.01 0.0920" rgba="0.3 0.3 0.3 0"/>
+      <geom name="leg3" type="cylinder" pos="-0.37 -0.17 -0.0980" size="0.01 0.0920" rgba="0.3 0.3 0.3 0"/>
+      <geom name="leg4" type="cylinder" pos="0.37 -0.17 -0.0980" size="0.01 0.0920" rgba="0.3 0.3 0.3 0"/>
+    </body>
+
+    <!-- <body name="draw1" pos="0.622458 -0.520562 0.196" quat="1 0 0 0">
+      <geom name="draw1_visual_geom" type="mesh" mesh="draw1" material="rubber" rgba="0.0 0.4 0.5 0.7" 
+        contype="0" conaffinity="0" group="1"/>
+      <geom name="draw1_collision_geom" type="box" 
+        pos="0.05 0.035 0.025" quat="1 0 0 0" size="0.048 0.034 0.024" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"
+        rgba="1 0 0 0.5"/>
+    </body>
+    <body name="draw2" pos="0.254281 -0.56305 0.196" quat="0.365226 0.351452 0.607535 0.611549">
+      <geom name="draw2_visual_geom" type="mesh" mesh="draw2" material="rubber" rgba="0.1 0.1 0.1 0.7"
+        contype="0" conaffinity="0" group="1"/>
+      <geom name="draw2_collision_1" type="box" 
+        pos="0.0025 0.04 0.05" quat="1 0 0 0" size="0.0025 0.04 0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"
+        rgba="1 0 0 0.5"/>
+      <geom name="draw2_collision_2" type="box" 
+        pos="0.0775 0.04 0.05" quat="1 0 0 0" size="0.0025 0.04 0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"
+        rgba="1 0 0 0.5"/>
+      <geom name="draw2_collision_3" type="box" 
+        pos="0.04 0.0775 0.05" quat="1 0 0 0" size="0.04 0.0025 0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"
+        rgba="1 0 0 0.5"/>
+      <geom name="draw2_collision_4" type="box" 
+        pos="0.04 0.0025 0.05" quat="1 0 0 0" size="0.04 0.0025 0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"
+        rgba="1 0 0 0.5"/>
+    </body> -->
+
+    <body name="nova2base_link" pos="0 0 0">
+      <inertial pos="1.31739e-05 -7.8496e-06 0.064777" mass="0.93987" fullinertia="0.0019168 0.0019228 0.0012727 -3.45738e-07 7.09346e-07 -4.56838e-07"/>
+      <geom mesh="n2_base_link" material="mat_n2"/>
+
+      <body name="nova2Link1" pos="0 0 0.2234">
+        <inertial pos="-5.44523e-07 -0.021872 -0.023624" mass="0.80337" fullinertia="0.0016795 0.0014697 0.0010371 1.54449e-07 6.95728e-08 0.00044202"/>
+        <joint name="nova2joint1" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+        <geom mesh="n2_Link1" material="mat_n2"/>
+
+        <body name="nova2Link2" pos="0 0 0" quat="0.499998 0.5 0.5 -0.500002">
+          <inertial pos="-0.15031 4.18878e-06 0.093145" mass="1.57816" fullinertia="0.0015667 0.02164 0.021736 -1.5729e-07 -0.0011524 -1.09921e-07"/>
+          <joint name="nova2joint2" axis="0 0 1" range="-3.14 3.14" damping="1"/>
+          <geom mesh="n2_Link2" material="mat_n2"/>
+
+          <body name="nova2Link3" pos="-0.28 0 0">
+            <inertial pos="-0.1183 3.912e-06 0.011301" mass="0.99867" fullinertia="0.00077571 0.009382 0.0094012 4.71332e-08 0.00054359 6.8262e-08"/>
+            <joint name="nova2joint3" axis="0 0 1" range="-2.79 2.79" damping="1"/>
+            <geom mesh="n2_Link3" material="mat_n2"/>
+
+            <body name="nova2Link4" pos="-0.22501 0 0.1175" euler="0 0 -1.5708">
+              <inertial pos="-7.47431e-06 -0.022655 -0.020459" mass="0.44161" fullinertia="0.00064117 0.00045537 0.00048272 1.23888e-08 3.0249e-08 0.00021328"/>
+              <joint name="nova2joint4" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+              <geom mesh="n2_Link4" material="mat_n2"/>
+
+              <body name="nova2Link5" pos="0 -0.12 0" euler="1.5708 0 0">
+                <inertial pos="-2.62723e-06 0.001913 -0.0076112" mass="0.57484" fullinertia="0.00066318 0.00039752 0.00064116 1.50481e-08 1.31861e-08 -0.00012026"/>
+                <joint name="nova2joint5" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+                <geom mesh="n2_Link5" material="mat_n2"/>
+
+                <body name="nova2Link6" pos="0 0.088004 0" euler="-1.5708 0 0">
+                  <inertial pos="-4.63325e-07 -4.9271e-05 -0.019692" mass="0.12425" fullinertia="4.97045e-05 4.99146e-05 7.67223e-05 1.38276e-11 -2.6897e-11 5.03764e-08"/>
+                  <joint name="nova2joint6" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+                  <geom mesh="n2_Link6" material="mat_n2"/>
+
+                  <body name="nova2ee_link1" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="0.05" diaginertia="1.7e-05 8.0e-06 1.7e-05"/>
+                    <geom mesh="ee_link1" material="mat_ee" contype="0" conaffinity="0"/>
+                    <body name="nova2ee_link2" pos="0 0 0.006">
+                      <inertial pos="0 0 0" mass="0.04" diaginertia="1.2e-05 6.0e-06 1.2e-05"/>
+                      <geom mesh="ee_link2" material="mat_ee" contype="0" conaffinity="0"/>
+                      <body name="nova2ee_link3" pos="0 0 0.007">
+                        <inertial pos="0 0 0" mass="0.03" diaginertia="1.0e-05 5.0e-06 1.0e-05"/>
+                        <geom mesh="ee_link3" material="mat_ee" contype="0" conaffinity="0"/>
+                        <site name="n2_ee" type="sphere" size="0.01" rgba="1 0 0 1" pos="0 0 0"/>
+                        
+                        <body name="R_hand_base_link" pos="0 0 0.0565" euler="0 0 1.571">
+                          <geom type="mesh" rgba="1 1 1 1" mesh="R_hand_base_link" mass="0.08"/>
+                          <body name="R_thumb_metacarpals_base1" pos="-0.013419 0.012551 0.060602">
+                              <inertial pos="0.0284775 -0.00319296 0.000288698" quat="0.982334 -0.131352 0.00768812 0.133066" mass="0.00845817" diaginertia="1.43534e-06 9.68033e-07 7.1801e-07" />
+                              <joint name="R_thumb_cmc_roll" pos="0 0 0" axis="0.999962 0 -0.00872652" limited="true" range="0 1.1339" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="R_thumb_metacarpals_base1" />
+                              <body name="R_thumb_metacarpals_base2" pos="0.035797 -0.00065879 0.00045944">
+                                  <inertial pos="0.00215248 0.00687961 -0.00178649" quat="0.987962 -0.0496902 -0.0287532 -0.143649" mass="0.00582711" diaginertia="3.20027e-07 2.71838e-07 1.75578e-07" />
+                                  <joint name="R_thumb_cmc_yaw" pos="0 0 0" axis="0.00851701 -0.21782 -0.975952" limited="true" range="0 1.9189" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="R_thumb_metacarpals_base2" />
+                                  <body name="R_thumb_metacarpals" pos="0.0046051 0.014383 -0.0051478" quat="0.491553 -0.408412 -0.343317 -0.688265">
+                                      <inertial pos="0.00183662 -2.80743e-06 0.0269905" quat="0.706337 -0.033722 -0.0338399 0.706262" mass="0.0152012" diaginertia="3.84771e-06 2.96886e-06 1.30492e-06" />
+                                      <joint name="R_thumb_cmc_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.5146" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="R_thumb_metacarpals" />
+                                      <body name="R_thumb_proximal" pos="0.0061722 0 0.047968">
+                                          <inertial pos="0.0015927 -4.43358e-06 0.0151574" quat="0.999254 2.82857e-05 -0.038623 -5.34436e-06" mass="0.0066223" diaginertia="1.01869e-06 9.10433e-07 4.44039e-07" />
+                                          <joint name="R_thumb_mcp" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.7152" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="R_thumb_proximal" />
+                                          <body name="R_thumb_distal" pos="-0.00017064 0 0.038665">
+                                              <inertial pos="-0.0013892 1.66654e-06 0.011579" quat="0.955526 0.00103379 -0.294899 -0.00188491" mass="0.00512934" diaginertia="4.02423e-07 3.23808e-07 1.77453e-07" />
+                                              <joint name="R_thumb_ip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.7763" damping="0.1"/>
+                                              <geom type="mesh" rgba="1 1 1 1" mesh="R_thumb_distal" contype="0" conaffinity="0" group="1"/>
+                                              <geom name="R_thumb_col" type="ellipsoid" size="0.004 0.01 0.0125" pos="0 0 0.017" quat="0.9239 0.0000 -0.3827 0.0000" rgba="1 0 0 1" 
+                                               friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                          </body>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="R_index_metacarpals" pos="-0.0021643 0.026654 0.13253">
+                              <inertial pos="-0.000473392 -6.96703e-07 0.00909068" quat="0.582341 0.401173 0.400934 0.582401" mass="0.009037" diaginertia="7.3738e-07 5.63015e-07 4.79402e-07" />
+                              <joint name="R_index_mcp_roll" pos="0 0 0" axis="-0.999962 0 0.00872652" limited="true" range="0 0.2181" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="R_index_metacarpals" />
+                              <body name="R_index_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.00022141 1.17214e-06 0.0104802" quat="0.705918 -0.0353614 -0.0351217 0.706538" mass="0.00654982" diaginertia="4.58698e-07 4.46166e-07 1.71942e-07" />
+                                  <joint name="R_index_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="R_index_proximal" />
+                                  <body name="R_index_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259933 -2.09526e-06 0.0110175" quat="0.990418 -0.000269623 -0.138103 0.000580602" mass="0.00283044" diaginertia="2.7204e-07 2.33078e-07 1.15541e-07" />
+                                      <joint name="R_index_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="R_index_middle" />
+                                      <body name="R_index_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710605 5.23484e-06 0.0121457" quat="0.973136 -0.00106266 -0.230227 -0.00127848" mass="0.00314459" diaginertia="1.85051e-07 1.48366e-07 7.68285e-08" />
+                                          <joint name="R_index_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="R_index_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="R_index_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="R_middle_proximal" pos="-0.0021316 0.0076542 0.15281">
+                              <inertial pos="-0.00022622 1.17216e-06 0.0104801" quat="0.70591 -0.0355235 -0.0352837 0.706529" mass="0.00654982" diaginertia="4.58698e-07 4.46166e-07 1.71942e-07" />
+                              <joint name="R_middle_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="R_middle_proximal" />
+                              <body name="R_middle_middle" pos="-0.001397 0 0.035623">
+                                  <inertial pos="-0.00261699 -2.09527e-06 0.0110133" quat="0.990307 -0.00027009 -0.138897 0.000580391" mass="0.00283044" diaginertia="2.7204e-07 2.33078e-07 1.15541e-07" />
+                                  <joint name="R_middle_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="R_middle_middle" />
+                                  <body name="R_middle_distal" pos="-0.0055098 0 0.025656">
+                                      <inertial pos="-0.000728493 5.23463e-06 0.0121446" quat="0.972966 -0.00106167 -0.230943 -0.00127922" mass="0.00314459" diaginertia="1.85051e-07 1.48366e-07 7.68285e-08" />
+                                      <joint name="R_middle_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="R_middle_distal" contype="0" conaffinity="0" group="1"/>
+                                      <geom name="R_middle_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                        friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="R_ring_metacarpals" pos="-0.0021643 -0.011346 0.13253">
+                              <inertial pos="-0.000473392 -6.96703e-07 0.00909068" quat="0.582341 0.401173 0.400934 0.582401" mass="0.009037" diaginertia="7.3738e-07 5.63015e-07 4.79402e-07" />
+                              <joint name="R_ring_mcp_roll" pos="0 0 0" axis="0.999962 0 0.00872652" limited="true" range="0 0.2181" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="R_ring_metacarpals" />
+                              <body name="R_ring_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.000221412 1.17117e-06 0.0104802" quat="0.705917 -0.0353614 -0.0351215 0.706539" mass="0.00654983" diaginertia="4.58698e-07 4.46166e-07 1.71942e-07" />
+                                  <joint name="R_ring_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="R_ring_proximal" />
+                                  <body name="R_ring_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259933 -2.09537e-06 0.0110175" quat="0.990418 -0.000269632 -0.138103 0.000580637" mass="0.00283044" diaginertia="2.7204e-07 2.33078e-07 1.15541e-07" />
+                                      <joint name="R_ring_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="R_ring_middle" />
+                                      <body name="R_ring_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710605 5.23486e-06 0.0121457" quat="0.973136 -0.00106266 -0.230227 -0.00127848" mass="0.00314459" diaginertia="1.85051e-07 1.48366e-07 7.68285e-08" />
+                                          <joint name="R_ring_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="R_ring_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="R_ring_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="R_pinky_metacarpals" pos="-0.00012074 -0.030346 0.12755">
+                              <inertial pos="-0.000473392 -6.96703e-07 0.00909068" quat="0.582341 0.401173 0.400934 0.582401" mass="0.009037" diaginertia="7.3738e-07 5.63015e-07 4.79402e-07" />
+                              <joint name="R_pinky_mcp_roll" pos="0 0 0" axis="0.999962 0 0.00872652" limited="true" range="0 0.3489" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="R_pinky_metacarpals" />
+                              <body name="R_pinky_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.000221412 1.17104e-06 0.0104802" quat="0.705917 -0.0353614 -0.0351215 0.706539" mass="0.00654983" diaginertia="4.58698e-07 4.46166e-07 1.71942e-07" />
+                                  <joint name="R_pinky_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="R_pinky_proximal" />
+                                  <body name="R_pinky_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259933 -2.09526e-06 0.0110175" quat="0.990418 -0.000269623 -0.138103 0.000580602" mass="0.00283044" diaginertia="2.7204e-07 2.33078e-07 1.15541e-07" />
+                                      <joint name="R_pinky_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="R_pinky_middle" />
+                                      <body name="R_pinky_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710605 5.23471e-06 0.0121457" quat="0.973136 -0.00106262 -0.230227 -0.00127847" mass="0.00314459" diaginertia="1.85051e-07 1.48366e-07 7.68285e-08" />
+                                          <joint name="R_pinky_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="R_pinky_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="R_pinky_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <body name="nova5base_link" pos="0.9035 -0.003 0">
+      <inertial pos="6.567e-06 2.7305e-06 0.069822" mass="1.31064" fullinertia="0.0030811 0.0030976 0.0023284 -4.037e-08 5.26077e-07 -6.3748e-09"/>
+      <geom mesh="n5_base_link" material="mat_n5"/>
+
+      <body name="nova5Link1" pos="0 0 0.24" >
+        <inertial pos="9.1864e-06 -0.021771 -0.026183" mass="1.08091" fullinertia="0.0026596 0.0024734 0.0016474 1.85196e-07 -3.2772e-07 0.00066133"/>
+        <joint name="nova5joint1" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+        <geom mesh="n5_Link1" material="mat_n5"/>
+
+        <body name="nova5Link2" pos="0 0 0" quat="-0.491193 -0.49119 -0.508657 0.508654">
+          <inertial pos="-0.19934 -0.0069646 0.10921" mass="2.54585" fullinertia="0.0028519 0.063677 0.064301 -0.0021278 -0.0010991 -3.83872e-05"/>
+          <joint name="nova5joint2" axis="0 0 1" range="-3.14 3.14" damping="1"/>
+          <geom mesh="n5_Link2" material="mat_n5"/>
+
+          <body name="nova5Link3" pos="-0.399756009268664 -0.0139690033141953 0">
+            <inertial pos="-0.15236 -0.0053572 0.019899" mass="1.40746" fullinertia="0.001008 0.023174 0.0236 -0.00077547 4.43267e-05 1.31338e-06"/>
+            <joint name="nova5joint3" axis="0 0 1" range="-2.79 2.79" damping="1"/>
+            <geom mesh="n5_Link3" material="mat_n5"/>
+
+            <body name="nova5Link4" pos="-0.329798707647103 -0.0115244277211674 0.134999532858734" euler="0 0 -1.53586622840712">
+              <inertial pos="-6.3711e-06 -0.022759 -0.020238" mass="0.43967" fullinertia="0.00063474 0.00045014 0.00048031 1.33529e-08 2.91413e-08 0.00021092"/>
+              <joint name="nova5joint4" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+              <geom mesh="n5_Link4" material="mat_n5"/>
+
+              <body name="nova5Link5" pos="0 -0.12 0" euler="1.5708 0 0">
+                <inertial pos="-1.2793e-06 0.0019091 -0.0076112" mass="0.57484" fullinertia="0.00066318 0.00039752 0.00064116 1.30179e-08 1.2267e-08 -0.00012026"/>
+                <joint name="nova5joint5" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+                <geom mesh="n5_Link5" material="mat_n5"/>
+
+                <body name="nova5Link6" pos="0 0.088328 0" euler="-1.5708 0 0">
+                  <inertial pos="1.5476e-06 0.0001516 -0.019459" mass="0.12968" fullinertia="5.02803e-05 5.054e-05 7.7863e-05 6.27222e-11 3.51287e-12 5.03437e-08"/>
+                  <joint name="nova5joint6" axis="0 0 1" range="-6.28 6.28" damping="1"/>
+                  <geom mesh="n5_Link6" material="mat_n5"/>
+
+                  <body name="nova5ee_link1" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="0.05" diaginertia="1.7e-05 8.0e-06 1.7e-05"/>
+                    <geom mesh="ee_link1" material="mat_ee" contype="0" conaffinity="0"/>
+                    <body name="nova5ee_link2" pos="0 0 0.006">
+                      <inertial pos="0 0 0" mass="0.04" diaginertia="1.2e-05 6.0e-06 1.2e-05"/>
+                      <geom mesh="ee_link2" material="mat_ee" contype="0" conaffinity="0"/>
+                      <body name="nova5ee_link3" pos="0 0 0.007">
+                        <inertial pos="0 0 0" mass="0.03" diaginertia="1.0e-05 5.0e-06 1.0e-05"/>
+                        <geom mesh="ee_link3" material="mat_ee" contype="0" conaffinity="0"/>
+                        <site name="n5_ee" type="sphere" size="0.01" rgba="0 0 1 1" pos="0 0 0"/>
+                        
+                        <body name="L_hand_base_link" pos="0 0 0.0565" euler="0 0 1.571">
+                          <geom type="mesh" rgba="1 1 1 1" mesh="L_hand_base_link" mass="0.08"/>
+                          <body name="L_thumb_metacarpals_base1" pos="-0.013419 -0.012551 0.060602">
+                              <inertial pos="0.0284775 0.00319295 0.000288805" quat="0.982336 0.131345 0.00769055 -0.133064" mass="0.00845816" diaginertia="1.43533e-06 9.68033e-07 7.18003e-07" />
+                              <joint name="L_thumb_cmc_roll" pos="0 0 0" axis="-0.999962 0 -0.00872652" limited="true" range="0 1.1339" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="L_thumb_metacarpals_base1" />
+                              <body name="L_thumb_metacarpals_base2" pos="0.035797 0.00065879 0.00045944">
+                                  <inertial pos="0.00183847 -0.00587846 -0.00151622" quat="0.988311 0.0421751 -0.0298606 0.143425" mass="0.00244726" diaginertia="1.16886e-07 9.8209e-08 6.83247e-08" />
+                                  <joint name="L_thumb_cmc_yaw" pos="0 0 0" axis="-0.00851701 -0.21782 0.975952" limited="true" range="0 1.9189" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="L_thumb_metacarpals_base2" />
+                                  <body name="L_thumb_metacarpals" pos="0.0046051 -0.014383 -0.0051478" quat="0.491553 0.408412 -0.343317 0.688265">
+                                      <inertial pos="0.00183662 3.48962e-06 0.0269904" quat="0.706268 -0.033841 -0.0337235 0.706331" mass="0.0152012" diaginertia="3.84771e-06 2.96886e-06 1.30493e-06" />
+                                      <joint name="L_thumb_cmc_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.5149" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="L_thumb_metacarpals" />
+                                      <body name="L_thumb_proximal" pos="0.0061722 0 0.047968">
+                                          <inertial pos="0.00159261 4.26589e-06 0.0151572" quat="0.999254 -2.88075e-05 -0.0386233 2.08487e-05" mass="0.00662224" diaginertia="1.01869e-06 9.10425e-07 4.44038e-07" />
+                                          <joint name="L_thumb_mcp" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.7152" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="L_thumb_proximal" />
+                                          <body name="L_thumb_distal" pos="-0.00017064 0 0.038665">
+                                              <inertial pos="-0.00138805 -1.9511e-06 0.0115761" quat="0.955491 -0.000941778 -0.295011 0.00203434" mass="0.0051279" diaginertia="4.02242e-07 3.23606e-07 1.7742e-07" />
+                                              <joint name="L_thumb_ip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.7763" damping="0.1"/>
+                                              <geom type="mesh" rgba="1 1 1 1" mesh="L_thumb_distal" contype="0" conaffinity="0" group="1"/>
+                                              <geom name="L_thumb_col" type="ellipsoid" size="0.004 0.01 0.0125" pos="0 0 0.017" quat="0.9239 0.0000 -0.3827 0.0000" rgba="1 0 0 1" 
+                                               friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                          </body>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="L_index_metacarpals" pos="-0.0021643 -0.026654 0.13253">
+                              <inertial pos="-0.00152427 6.0577e-07 0.0106912" quat="0.60403 0.367538 0.367758 0.604002" mass="0.00388771" diaginertia="2.75278e-07 2.13656e-07 1.8036e-07" />
+                              <joint name="L_index_mcp_roll" pos="0 0 0" axis="0.999962 0 0.00872652" limited="true" range="0 0.2181" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="L_index_metacarpals" />
+                              <body name="L_index_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.00138261 -2.04481e-06 0.0182296" quat="0.995413 0.000227464 -0.0956717 0.00024477" mass="0.00316247" diaginertia="3.64797e-07 3.51906e-07 1.33211e-07" />
+                                  <joint name="L_index_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="L_index_proximal" />
+                                  <body name="L_index_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259934 2.18965e-06 0.0110175" quat="0.990418 0.000265949 -0.138102 -0.000584259" mass="0.00283044" diaginertia="2.7204e-07 2.33077e-07 1.15541e-07" />
+                                      <joint name="L_index_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="L_index_middle" />
+                                      <body name="L_index_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710517 -4.75727e-06 0.0121453" quat="0.973136 0.00104259 -0.230226 0.00121957" mass="0.00314452" diaginertia="1.85045e-07 1.48362e-07 7.68274e-08" />
+                                          <joint name="L_index_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="L_index_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="L_index_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="L_middle_proximal" pos="-0.0021316 -0.0076542 0.15281">
+                              <inertial pos="-0.00139098 -2.04476e-06 0.018229" quat="0.995391 0.000227406 -0.0959001 0.000244856" mass="0.00316247" diaginertia="3.64797e-07 3.51906e-07 1.33211e-07" />
+                              <joint name="L_middle_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="L_middle_proximal" />
+                              <body name="L_middle_middle" pos="-0.001397 0 0.035623">
+                                  <inertial pos="-0.002617 2.18964e-06 0.0110133" quat="0.990307 0.000266416 -0.138897 -0.000584041" mass="0.00283044" diaginertia="2.7204e-07 2.33077e-07 1.15541e-07" />
+                                  <joint name="L_middle_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="L_middle_middle" />
+                                  <body name="L_middle_distal" pos="-0.0055098 0 0.025656">
+                                      <inertial pos="-0.000728403 -4.7557e-06 0.0121443" quat="0.972966 0.00104176 -0.230943 0.00122019" mass="0.00314452" diaginertia="1.85045e-07 1.48362e-07 7.68274e-08" />
+                                      <joint name="L_middle_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.628" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="L_middle_distal" contype="0" conaffinity="0" group="1"/>
+                                      <geom name="L_middle_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                        friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="L_ring_metacarpals" pos="-0.0021643 0.011346 0.13253">
+                              <inertial pos="-0.00152427 6.0577e-07 0.0106912" quat="0.60403 0.367538 0.367758 0.604002" mass="0.00388771" diaginertia="2.75278e-07 2.13656e-07 1.8036e-07" />
+                              <joint name="L_ring_mcp_roll" pos="0 0 0" axis="-0.999962 0 0.00872652" limited="true" range="0 0.2181" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="L_ring_metacarpals" />
+                              <body name="L_ring_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.00138261 -2.04478e-06 0.0182296" quat="0.995413 0.000227463 -0.0956717 0.00024479" mass="0.00316247" diaginertia="3.64797e-07 3.51906e-07 1.33211e-07" />
+                                  <joint name="L_ring_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="L_ring_proximal" />
+                                  <body name="L_ring_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259934 2.18954e-06 0.0110175" quat="0.990418 0.00026594 -0.138102 -0.000584225" mass="0.00283044" diaginertia="2.7204e-07 2.33077e-07 1.15541e-07" />
+                                      <joint name="L_ring_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="L_ring_middle" />
+                                      <body name="L_ring_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710517 -4.75637e-06 0.0121453" quat="0.973136 0.00104248 -0.230226 0.00121958" mass="0.00314452" diaginertia="1.85045e-07 1.48362e-07 7.68274e-08" />
+                                          <joint name="L_ring_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="L_ring_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="L_ring_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                          <body name="L_pinky_metacarpals" pos="-0.00012074 0.030346 0.12755">
+                              <inertial pos="-0.00152427 6.0577e-07 0.0106912" quat="0.60403 0.367538 0.367758 0.604002" mass="0.00388771" diaginertia="2.75278e-07 2.13656e-07 1.8036e-07" />
+                              <joint name="L_pinky_mcp_roll" pos="0 0 0" axis="-0.999962 0 0.00872652" limited="true" range="0 0.3489" damping="0.1"/>
+                              <geom type="mesh" rgba="1 1 1 1" mesh="L_pinky_metacarpals" />
+                              <body name="L_pinky_proximal" pos="0.0020763 0 0.015294">
+                                  <inertial pos="-0.00138261 -2.04481e-06 0.0182296" quat="0.995413 0.000227464 -0.0956717 0.00024477" mass="0.00316247" diaginertia="3.64797e-07 3.51906e-07 1.33211e-07" />
+                                  <joint name="L_pinky_mcp_pitch" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.3607" damping="0.1"/>
+                                  <geom type="mesh" rgba="1 1 1 1" mesh="L_pinky_proximal" />
+                                  <body name="L_pinky_middle" pos="-0.0013807 0 0.035624">
+                                      <inertial pos="-0.00259934 2.18954e-06 0.0110175" quat="0.990418 0.00026594 -0.138102 -0.000584225" mass="0.00283044" diaginertia="2.7204e-07 2.33077e-07 1.15541e-07" />
+                                      <joint name="L_pinky_pip" pos="0 0 0" axis="0 1 0" limited="true" range="0 1.8317" damping="0.1"/>
+                                      <geom type="mesh" rgba="1 1 1 1" mesh="L_pinky_middle" />
+                                      <body name="L_pinky_distal" pos="-0.0054686 0 0.025665">
+                                          <inertial pos="-0.000710517 -4.7573e-06 0.0121453" quat="0.973136 0.00104262 -0.230226 0.0012196" mass="0.00314452" diaginertia="1.85045e-07 1.48362e-07 7.68274e-08" />
+                                          <joint name="L_pinky_dip" pos="0 0 0" axis="0 1 0" limited="true" range="0 0.628" damping="0.1"/>
+                                          <geom type="mesh" rgba="1 1 1 1" mesh="L_pinky_distal" contype="0" conaffinity="0" group="1"/>
+                                          <geom name="L_pinky_col" type="ellipsoid" size="0.004 0.008 0.0125" pos="0.001 0 0.016" quat="0.9537 0.0000 -0.3007 0.0000" rgba="1 0 0 1" 
+                                            friction="2.0 0.1 0.005"  solref="0.002 1" solimp="0.95 0.99 0.001" condim="3" contype="1" conaffinity="1"/>
+                                      </body>
+                                  </body>
+                              </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <!-- 1) Keep EE decorative links out of collision with hands -->
+    <exclude body1="nova2ee_link1" body2="R_hand_base_link"/>
+    <exclude body1="nova2ee_link2" body2="R_hand_base_link"/>
+    <exclude body1="nova2ee_link3" body2="R_hand_base_link"/>
+
+    <exclude body1="nova5ee_link1" body2="L_hand_base_link"/>
+    <exclude body1="nova5ee_link2" body2="L_hand_base_link"/>
+    <exclude body1="nova5ee_link3" body2="L_hand_base_link"/>
+    
+    
+    <exclude body1="R_hand_base_link" body2="R_thumb_metacarpals_base1"/>
+    <exclude body1="R_hand_base_link" body2="R_thumb_metacarpals_base2"/>
+    <exclude body1="R_hand_base_link" body2="R_thumb_metacarpals"/>
+    <exclude body1="R_hand_base_link" body2="R_index_metacarpals"/>
+    <exclude body1="R_hand_base_link" body2="R_middle_proximal"/>
+    <exclude body1="R_hand_base_link" body2="R_ring_metacarpals"/>
+    <exclude body1="R_hand_base_link" body2="R_pinky_metacarpals"/>
+
+    <!-- Left hand palm against each left-finger root -->
+    <exclude body1="L_hand_base_link" body2="L_thumb_metacarpals_base1"/>
+    <exclude body1="L_hand_base_link" body2="L_thumb_metacarpals_base2"/>
+    <exclude body1="L_hand_base_link" body2="L_thumb_metacarpals"/>
+    <exclude body1="L_hand_base_link" body2="L_index_metacarpals"/>
+    <exclude body1="L_hand_base_link" body2="L_middle_proximal"/>
+    <exclude body1="L_hand_base_link" body2="L_ring_metacarpals"/>
+    <exclude body1="L_hand_base_link" body2="L_pinky_metacarpals"/>
+
+    <!-- 2) RIGHT hand: turn off finger-to-finger self-collision (adjacent fingers) -->
+    <!-- index ↔ middle -->
+    <exclude body1="R_index_metacarpals" body2="R_middle_proximal"/>
+    <exclude body1="R_index_proximal"     body2="R_middle_proximal"/>
+    <exclude body1="R_index_middle"       body2="R_middle_middle"/>
+    <exclude body1="R_index_distal"       body2="R_middle_distal"/>
+
+    <!-- middle ↔ ring -->
+    <exclude body1="R_middle_proximal"    body2="R_ring_metacarpals"/>
+    <exclude body1="R_middle_proximal"    body2="R_ring_proximal"/>
+    <exclude body1="R_middle_middle"      body2="R_ring_middle"/>
+    <exclude body1="R_middle_distal"      body2="R_ring_distal"/>
+
+    <!-- ring ↔ pinky -->
+    <exclude body1="R_ring_metacarpals"   body2="R_pinky_metacarpals"/>
+    <exclude body1="R_ring_proximal"      body2="R_pinky_proximal"/>
+    <exclude body1="R_ring_middle"        body2="R_pinky_middle"/>
+    <exclude body1="R_ring_distal"        body2="R_pinky_distal"/>
+
+    <!-- (Optional) thumb vs index: often close, so exclude too -->
+    <exclude body1="R_thumb_metacarpals"  body2="R_index_metacarpals"/>
+    <exclude body1="R_thumb_proximal"     body2="R_index_proximal"/>
+    <exclude body1="R_thumb_distal"       body2="R_index_middle"/>
+
+    <!-- 3) LEFT hand: same pattern -->
+    <!-- index ↔ middle -->
+    <exclude body1="L_index_metacarpals"  body2="L_middle_proximal"/>
+    <exclude body1="L_index_proximal"     body2="L_middle_proximal"/>
+    <exclude body1="L_index_middle"       body2="L_middle_middle"/>
+    <exclude body1="L_index_distal"       body2="L_middle_distal"/>
+
+    <!-- middle ↔ ring -->
+    <exclude body1="L_middle_proximal"    body2="L_ring_metacarpals"/>
+    <exclude body1="L_middle_proximal"    body2="L_ring_proximal"/>
+    <exclude body1="L_middle_middle"      body2="L_ring_middle"/>
+    <exclude body1="L_middle_distal"      body2="L_ring_distal"/>
+
+    <!-- ring ↔ pinky -->
+    <exclude body1="L_ring_metacarpals"   body2="L_pinky_metacarpals"/>
+    <exclude body1="L_ring_proximal"      body2="L_pinky_proximal"/>
+    <exclude body1="L_ring_middle"        body2="L_pinky_middle"/>
+    <exclude body1="L_ring_distal"        body2="L_pinky_distal"/>
+
+    <!-- (Optional) thumb vs index -->
+    <exclude body1="L_thumb_metacarpals"  body2="L_index_metacarpals"/>
+    <exclude body1="L_thumb_proximal"     body2="L_index_proximal"/>
+    <exclude body1="L_thumb_distal"       body2="L_index_middle"/>
+    
+    <!-- 1) EE visuals don't collide with hands -->
+    <exclude body1="nova2ee_link1" body2="R_hand_base_link"/>
+    <exclude body1="nova2ee_link2" body2="R_hand_base_link"/>
+    <exclude body1="nova2ee_link3" body2="R_hand_base_link"/>
+    <exclude body1="nova5ee_link1" body2="L_hand_base_link"/>
+    <exclude body1="nova5ee_link2" body2="L_hand_base_link"/>
+    <exclude body1="nova5ee_link3" body2="L_hand_base_link"/>
+
+    <!-- 2) Palm vs all fingers (disable palm–finger self-collisions) -->
+    <!-- Right palm vs right finger roots -->
+    <exclude body1="R_hand_base_link" body2="R_thumb_metacarpals_base1"/>
+    <exclude body1="R_hand_base_link" body2="R_index_metacarpals"/>
+    <exclude body1="R_hand_base_link" body2="R_middle_proximal"/>
+    <exclude body1="R_hand_base_link" body2="R_ring_metacarpals"/>
+    <exclude body1="R_hand_base_link" body2="R_pinky_metacarpals"/>
+
+    <!-- Left palm vs left finger roots -->
+    <exclude body1="L_hand_base_link" body2="L_thumb_metacarpals_base1"/>
+    <exclude body1="L_hand_base_link" body2="L_index_metacarpals"/>
+    <exclude body1="L_hand_base_link" body2="L_middle_proximal"/>
+    <exclude body1="L_hand_base_link" body2="L_ring_metacarpals"/>
+    <exclude body1="L_hand_base_link" body2="L_pinky_metacarpals"/>
+
+    <!-- 3) Wrist link vs fingers (avoid chatter near the cuff) -->
+    <!-- Right wrist (nova2Link6) vs right finger roots -->
+    <exclude body1="nova2Link6" body2="R_thumb_metacarpals_base1"/>
+    <exclude body1="nova2Link6" body2="R_index_metacarpals"/>
+    <exclude body1="nova2Link6" body2="R_middle_proximal"/>
+    <exclude body1="nova2Link6" body2="R_ring_metacarpals"/>
+    <exclude body1="nova2Link6" body2="R_pinky_metacarpals"/>
+
+    <!-- Left wrist (nova5Link6) vs left finger roots -->
+    <exclude body1="nova5Link6" body2="L_thumb_metacarpals_base1"/>
+    <exclude body1="nova5Link6" body2="L_index_metacarpals"/>
+    <exclude body1="nova5Link6" body2="L_middle_proximal"/>
+    <exclude body1="nova5Link6" body2="L_ring_metacarpals"/>
+    <exclude body1="nova5Link6" body2="L_pinky_metacarpals"/>
+
+    <!-- 4) Finger-to-finger self-collision OFF within each hand (root-to-root is enough) -->
+    <!-- Right hand (5 choose 2 = 10 pairs) -->
+    <exclude body1="R_thumb_metacarpals_base1" body2="R_index_metacarpals"/>
+    <exclude body1="R_thumb_metacarpals_base1" body2="R_middle_proximal"/>
+    <exclude body1="R_thumb_metacarpals_base1" body2="R_ring_metacarpals"/>
+    <exclude body1="R_thumb_metacarpals_base1" body2="R_pinky_metacarpals"/>
+    <exclude body1="R_index_metacarpals"        body2="R_middle_proximal"/>
+    <exclude body1="R_index_metacarpals"        body2="R_ring_metacarpals"/>
+    <exclude body1="R_index_metacarpals"        body2="R_pinky_metacarpals"/>
+    <exclude body1="R_middle_proximal"          body2="R_ring_metacarpals"/>
+    <exclude body1="R_middle_proximal"          body2="R_pinky_metacarpals"/>
+    <exclude body1="R_ring_metacarpals"         body2="R_pinky_metacarpals"/>
+
+    <!-- Left hand -->
+    <exclude body1="L_thumb_metacarpals_base1" body2="L_index_metacarpals"/>
+    <exclude body1="L_thumb_metacarpals_base1" body2="L_middle_proximal"/>
+    <exclude body1="L_thumb_metacarpals_base1" body2="L_ring_metacarpals"/>
+    <exclude body1="L_thumb_metacarpals_base1" body2="L_pinky_metacarpals"/>
+    <exclude body1="L_index_metacarpals"       body2="L_middle_proximal"/>
+    <exclude body1="L_index_metacarpals"       body2="L_ring_metacarpals"/>
+    <exclude body1="L_index_metacarpals"       body2="L_pinky_metacarpals"/>
+    <exclude body1="L_middle_proximal"         body2="L_ring_metacarpals"/>
+    <exclude body1="L_middle_proximal"         body2="L_pinky_metacarpals"/>
+    <exclude body1="L_ring_metacarpals"        body2="L_pinky_metacarpals"/>
+
+  </contact>
+
+  <actuator>
+    <!-- NOVA2 -->
+    <position name="nova2joint1" joint="nova2joint1" kp="300" ctrlrange="-6.28 6.28"/>
+    <position name="nova2joint2" joint="nova2joint2" kp="300" ctrlrange="-3.14  3.14"/>
+    <position name="nova2joint3" joint="nova2joint3" kp="300" ctrlrange="-2.79  2.79"/>
+    <position name="nova2joint4" joint="nova2joint4" kp="250" ctrlrange="-6.28  6.28"/>
+    <position name="nova2joint5" joint="nova2joint5" kp="200" ctrlrange="-6.28  6.28"/>
+    <position name="nova2joint6" joint="nova2joint6" kp="150" ctrlrange="-6.28  6.28"/>
+
+    <!-- NOVA5 -->
+    <position name="nova5joint1" joint="nova5joint1" kp="300" ctrlrange="-6.28 6.28"/>
+    <position name="nova5joint2" joint="nova5joint2" kp="300" ctrlrange="-3.14  3.14"/>
+    <position name="nova5joint3" joint="nova5joint3" kp="300" ctrlrange="-2.79  2.79"/>
+    <position name="nova5joint4" joint="nova5joint4" kp="250" ctrlrange="-6.28  6.28"/>
+    <position name="nova5joint5" joint="nova5joint5" kp="200" ctrlrange="-6.28  6.28"/>
+    <position name="nova5joint6" joint="nova5joint6" kp="150" ctrlrange="-6.28  6.28"/>
+
+    <!-- Hands (gentler gains) -->
+    <position name="R_thumb_cmc_roll"   joint="R_thumb_cmc_roll"   kp="300" ctrlrange="0 1.0427"/>
+    <position name="R_thumb_cmc_yaw"    joint="R_thumb_cmc_yaw"    kp="300" ctrlrange="0 1.2043"/>
+    <position name="R_thumb_cmc_pitch"  joint="R_thumb_cmc_pitch"  kp="200" ctrlrange="0 0.5146"/>
+    <position name="R_thumb_mcp"        joint="R_thumb_mcp"        kp="150" ctrlrange="0 0.7152"/>
+    <position name="R_thumb_ip"         joint="R_thumb_ip"         kp="100" ctrlrange="0 0.7763"/>
+    <position name="R_index_mcp_roll"   joint="R_index_mcp_roll"   kp="150" ctrlrange="0 0.2181"/>
+    <position name="R_index_mcp_pitch"  joint="R_index_mcp_pitch"  kp="200" ctrlrange="0 1.3607"/>
+    <position name="R_index_pip"        joint="R_index_pip"        kp="150" ctrlrange="0 1.8317"/>
+    <position name="R_index_dip"        joint="R_index_dip"        kp="100" ctrlrange="0 1.8317"/>
+    <position name="R_middle_mcp_pitch" joint="R_middle_mcp_pitch" kp="200" ctrlrange="0 1.3607"/>
+    <position name="R_middle_pip"       joint="R_middle_pip"       kp="150" ctrlrange="0 1.8317"/>
+    <position name="R_middle_dip"       joint="R_middle_dip"       kp="100" ctrlrange="0 0.6280"/>
+    <position name="R_ring_mcp_roll"    joint="R_ring_mcp_roll"    kp="150" ctrlrange="0 0.2181"/>
+    <position name="R_ring_mcp_pitch"   joint="R_ring_mcp_pitch"   kp="200" ctrlrange="0 1.3607"/>
+    <position name="R_ring_pip"         joint="R_ring_pip"         kp="150" ctrlrange="0 1.8317"/>
+    <position name="R_ring_dip"         joint="R_ring_dip"         kp="100" ctrlrange="0 0.6280"/>
+    <position name="R_pinky_mcp_roll"   joint="R_pinky_mcp_roll"   kp="100" ctrlrange="0 0.3489"/>
+    <position name="R_pinky_mcp_pitch"  joint="R_pinky_mcp_pitch"  kp="200" ctrlrange="0 1.3607"/>
+    <position name="R_pinky_pip"        joint="R_pinky_pip"        kp="150" ctrlrange="0 1.8317"/>
+    <position name="R_pinky_dip"        joint="R_pinky_dip"        kp="100" ctrlrange="0 0.6280"/>
+    
+    <position name="L_thumb_cmc_roll"   joint="L_thumb_cmc_roll"   kp="300" ctrlrange="0 1.0427"/>
+    <position name="L_thumb_cmc_yaw"    joint="L_thumb_cmc_yaw"    kp="300" ctrlrange="0 1.2043"/>
+    <position name="L_thumb_cmc_pitch"  joint="L_thumb_cmc_pitch"  kp="200" ctrlrange="0 0.5149"/>
+    <position name="L_thumb_mcp"        joint="L_thumb_mcp"        kp="150" ctrlrange="0 0.7152"/>
+    <position name="L_thumb_ip"         joint="L_thumb_ip"         kp="100" ctrlrange="0 0.7763"/>
+    <position name="L_index_mcp_roll"   joint="L_index_mcp_roll"   kp="150" ctrlrange="0 0.2181"/>
+    <position name="L_index_mcp_pitch"  joint="L_index_mcp_pitch"  kp="200" ctrlrange="0 1.3607"/>
+    <position name="L_index_pip"        joint="L_index_pip"        kp="150" ctrlrange="0 1.8317"/>
+    <position name="L_index_dip"        joint="L_index_dip"        kp="100" ctrlrange="0 0.6280"/>
+    <position name="L_middle_mcp_pitch" joint="L_middle_mcp_pitch" kp="200" ctrlrange="0 1.3607"/>
+    <position name="L_middle_pip"       joint="L_middle_pip"       kp="150" ctrlrange="0 1.8317"/>
+    <position name="L_middle_dip"       joint="L_middle_dip"       kp="100" ctrlrange="0 1.6280"/>
+    <position name="L_ring_mcp_roll"    joint="L_ring_mcp_roll"    kp="150" ctrlrange="0 0.2181"/>
+    <position name="L_ring_mcp_pitch"   joint="L_ring_mcp_pitch"   kp="200" ctrlrange="0 1.3607"/>
+    <position name="L_ring_pip"         joint="L_ring_pip"         kp="150" ctrlrange="0 1.8317"/>
+    <position name="L_ring_dip"         joint="L_ring_dip"         kp="100" ctrlrange="0 0.6280"/>
+    <position name="L_pinky_mcp_roll"   joint="L_pinky_mcp_roll"   kp="100" ctrlrange="0 0.3489"/>
+    <position name="L_pinky_mcp_pitch"  joint="L_pinky_mcp_pitch"  kp="200" ctrlrange="0 1.3607"/>
+    <position name="L_pinky_pip"        joint="L_pinky_pip"        kp="150" ctrlrange="0 1.8317"/>
+    <position name="L_pinky_dip"        joint="L_pinky_dip"        kp="100" ctrlrange="0 0.6280"/>
+  </actuator>
+
+</mujoco>

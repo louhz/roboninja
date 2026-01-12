@@ -1,0 +1,82 @@
+<mujoco model="graspable_objects">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.001"
+          cone="pyramidal" impratio="5" tolerance="1e-8">
+    <flag warmstart="enable"/>
+  </option>
+
+  <asset>
+    <mesh name="draw1" file="meshes/Draw/draw1.stl"/>
+    <mesh name="draw2" file="meshes/Draw/draw2.stl"/>
+    <material name="rubber" rgba="0.0 0.4 0.5 1"/>
+    <material name="mat_floor" rgba="0.9 0.9 0.9 1"/>
+  </asset>
+
+  <!-- Defaults: split visual vs collision -->
+  <default>
+    <!-- General contact-friendly settings -->
+    <geom friction="1.2 0.01 0.002"
+          solref="0.005 1"
+          solimp="0.95 0.99 0.001"
+          condim="6"
+          contype="1"
+          conaffinity="1"/>
+
+    <!-- Collision geoms: carry mass, collide, slightly higher friction & small margin -->
+    <default class="col">
+      <geom friction="1.5 0.015 0.003"
+            margin="0.002"
+            solref="0.003 1"
+            solimp="0.95 0.99 0.001"
+            condim="6"
+            contype="1"
+            conaffinity="1"/>
+    </default>
+
+    <!-- Visual geoms: render-only (no contact, no mass) -->
+    <default class="vis">
+      <geom contype="0" conaffinity="0" group="1" density="0"/>
+    </default>
+  </default>
+
+  <worldbody>
+
+    <!-- Ground -->
+    <geom name="floor" type="plane" size="2 2 0.05" material="mat_floor"/>
+
+    <!-- draw1: Graspable object -->
+    <body name="draw1" pos="0.613 -0.478 0.196" quat="0.987964 0.003288 0.003636 0.154607">
+      <joint name="draw1_free" type="free" damping="0.5" armature="0.001"/>
+
+      <!-- Visual mesh (massless & non-colliding) -->
+      <geom name="draw1_vis" class="vis" type="mesh" mesh="draw1" material="rubber"/>
+
+      <!-- Collision proxy (simple convex shape for reliable contacts) 
+           size values are HALF-extents (full dims ~ 7×5×2 cm).
+           Density chosen to yield a ~100 g object; adjust as needed. -->
+      <geom name="draw1_col_box" class="col" type="box" size="0.035 0.025 0.010" density="1500"/>
+
+      <!-- Optional extra collider for a protruding handle (uncomment/tune if useful) -->
+      <!-- <geom name="draw1_col_capsule" class="col" type="capsule"
+                fromto="-0.02 0 0  0.02 0 0" size="0.006" density="1500"/> -->
+
+      <!-- Grasp target frame at the COM -->
+      <site name="draw1_grasp" pos="0 0 0" size="0.005" rgba="0.8 0.2 0.2 1"/>
+    </body>
+
+    <!-- draw2: Static visual/background object (fixed to world, no collisions) -->
+    <body name="draw2" pos="0.25 -0.521 0.196" quat="0.365226 0.351452 0.607535 0.611549">
+      <!-- No joint => fixed; visual only => no mass, no contact -->
+      <geom name="draw2_vis" class="vis" type="mesh" mesh="draw2" rgba="0.1 0.1 0.1 1"/>
+    </body>
+
+  </worldbody>
+</mujoco>
+

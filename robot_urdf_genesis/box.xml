@@ -1,0 +1,49 @@
+<mujoco model="graspable1_objects">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+  
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.001"
+          cone="pyramidal" impratio="5" tolerance="1e-8">
+    <flag warmstart="enable"/>
+  </option>
+
+  <asset>
+    <mesh name="box1" file="meshes/box/box_1.stl"/>
+    <mesh name="box2" file="meshes/box/box_2.stl"/>
+    <material name="rubber" rgba="0.0 0.4 0.5 1"/>
+  </asset>
+
+  <default>
+    <!-- 物体默认属性：高摩擦系数 -->
+    <geom type="mesh" 
+          friction="2.5 0.1 0.005"
+          solref="0.002 1" 
+          solimp="0.95 0.99 0.001"
+          condim="4"
+          contype="1" 
+          conaffinity="1"/>
+  </default>
+
+  <worldbody>
+    
+    <!-- box1: Movable object with proper inertial properties -->
+    <body name="box1" pos="0.58 -0.54 0.216" quat="0.67904 -0.13564 -0.71018 -0.12710">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="box1_geom" type="mesh" mesh="box1" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+    <!-- boxx2: Static object (no joint), with inertial for stability -->
+    <body name="box2" pos="0.35 -0.50 0.206" quat="0.57446 -0.53040 -0.41705 0.46341">
+      <joint type="free" damping="0.5" armature="0.001"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="box2_geom" type="mesh" mesh="box2" material="rubber" rgba="0.0 0.4 0.5 1" mass="0.05" friction="2.5 0.1 0.005" solref="0.002 1" solimp="0.95 0.99 0.001" condim="4"/>
+    </body>
+
+  </worldbody>
+</mujoco>
