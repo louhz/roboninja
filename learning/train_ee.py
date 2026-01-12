@@ -1,36 +1,42 @@
 """
-train_triplane_vla.py
+train_triplane_vla_dual_policy_postprocess.py
 
-Supervised behavior cloning for:
-  MultiStageTactilePointCloudTransformer
-with:
-  - point cloud + tactile + object id inputs
-  - ground truth robot actions + per-step stage ids
+Supervised behavior cloning for TWO separate policies:
+  1) End-effector pose policy (policy_ee)
+  2) Dexterous control policy (policy_dex)
 
-This script assumes your raw data is episodic:
-  Each episode contains sequences:
-    point_xyz_seq[t], tactile_xyz_seq[t], actions_seq[t], stage_id_seq[t]
-  plus a single object_id for the whole episode (common).
+Key differences vs your original script:
+- We train TWO model instances (same obs structure, separate action heads/models).
+- Base chunk size is fixed: K_base = 32 (no adaptive chunking inside decoder/encoder).
+- Adaptive action chunking is performed as a DIFFERENTIABLE post-processing step:
+    - If target_len < K_base: time-compress with interpolation
+    - If target_len > K_base: linear extrapolation past the last step (or optional stretching)
+- target_len is object-id dependent (configurable).
 
-We wrap it into "stage-aligned chunks" for training:
-  At a valid start time t0 where stage is constant for at least K_stage steps,
-  we build a training sample:
-    obs at t0 + stage_id(t0) + object_id + action_chunk (length Kmax padded)
+This keeps your MultiStageTactilePointCloudTransformer usage intact, but removes the need
+to implement adaptive chunk logic inside the model.
 
-Important:
-- Your model's decoder uses fixed chunk size per stage (stage_chunk_sizes).
-- The model skeleton assumes a batch forwarded together has a uniform stage;
-  so we group the batch by stage before calling model.forward_macro_step().
+Expected episode format (.pt):
+Required:
+  - object_id: int
+  - stage_id:  LongTensor [T] (still used for routing which policy learns which samples)
+  - point_xyz: [T,N,3] or [N,3]
+  - (optional) point_feats: [T,N,dp] or [N,dp]
+  - (optional) tactile_xyz/tactile_feats similarly
 
-Usage (example):
-  python train_triplane_vla.py \
-    --data_root /path/to/data \
-    --epochs 50 --batch_size 16 --lr 3e-4 \
-    --num_objects 20 \
-    --stage0_chunk 2 --stage1_chunk 8 --max_chunk_size 16
+Actions:
+Option A (recommended): two explicit tensors
+  - actions_ee:  FloatTensor [T, action_dim_ee]
+  - actions_dex: FloatTensor [T, action_dim_dex]
 
-Replace EpisodeDataset.__getitem__ with your real loader.
+Option B: one tensor that can be split
+  - actions: FloatTensor [T, action_dim_ee + action_dim_dex]
+    (we split first action_dim_ee dims -> ee, remaining -> dex)
 
+Routing:
+- By default:
+    stage == ee_stage_id  -> train policy_ee
+    stage == dex_stage_id -> train policy_dex
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ import json
 import time
 import argparse
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -58,7 +64,6 @@ from model_triplane_vla import (
     MultiStageTactilePointCloudTransformer,
 )
 
-
 # -----------------------------
 # Utilities
 # -----------------------------
@@ -70,19 +75,19 @@ def set_seed(seed: int) -> None:
 
 @torch.no_grad()
 def make_object_onehot(object_id: torch.Tensor, num_objects: int) -> torch.Tensor:
-    # object_id: [B]
     return F.one_hot(object_id, num_classes=num_objects).float()
 
 
 @torch.no_grad()
-def compute_aabb_from_points(point_xyz: torch.Tensor, pad_ratio: float = 0.05) -> Tuple[torch.Tensor, torch.Tensor]:
+def compute_aabb_from_points(
+    point_xyz: torch.Tensor, pad_ratio: float = 0.05
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     point_xyz: [B,N,3]
-    returns:
-      aabb_min, aabb_max: [B,3]
+    returns: aabb_min, aabb_max: [B,3]
     """
-    mn = point_xyz.amin(dim=1)  # [B,3]
-    mx = point_xyz.amax(dim=1)  # [B,3]
+    mn = point_xyz.amin(dim=1)
+    mx = point_xyz.amax(dim=1)
     center = 0.5 * (mn + mx)
     half = 0.5 * (mx - mn)
     half = half * (1.0 + pad_ratio) + 1e-6
@@ -109,49 +114,142 @@ def pad_actions_to_Kmax(actions: torch.Tensor, Kmax: int) -> Tuple[torch.Tensor,
 def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """
     pred/target: [B,K,da]
-    mask:        [B,K] boolean (True valid)
+    mask:        [B,K] boolean
     """
-    # avoid empty mask
     denom = mask.sum().clamp(min=1).float()
-    err = (pred - target) ** 2  # [B,K,da]
-    err = err.mean(dim=-1)      # [B,K]
-    return (err[mask].sum() / denom)
+    err = (pred - target) ** 2
+    err = err.mean(dim=-1)  # [B,K]
+    return err[mask].sum() / denom
 
 
 # -----------------------------
-# Raw episodic dataset (YOU implement)
+# Differentiable post-processing: interpolation / extrapolation
+# -----------------------------
+
+class DifferentiableChunkResampler(nn.Module):
+    """
+    Resamples a fixed-length base action chunk (K_base) into a longer padded horizon (K_out_max),
+    where the "effective" horizon per sample is target_len[b].
+
+    This is differentiable w.r.t. input actions AND (for the interpolation part) w.r.t the sampling grid.
+
+    Modes:
+      - "stretch": always map j in [0,target_len-1] to t in [0,K_base-1] (no extrapolation)
+      - "extrapolate": use t=j (keeps 1-step spacing, extrapolates beyond K_base-1)
+      - "auto": if target_len <= K_base => stretch, else => extrapolate
+    """
+
+    def __init__(self, K_base: int, K_out_max: int, mode: str = "auto") -> None:
+        super().__init__()
+        assert mode in ("auto", "stretch", "extrapolate")
+        self.K_base = int(K_base)
+        self.K_out_max = int(K_out_max)
+        self.mode = mode
+
+    def forward(
+        self,
+        x: torch.Tensor,          # [B,K_base,da]
+        target_len: torch.Tensor  # [B] long
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+          y: [B,K_out_max,da]  (post-processed / resampled)
+          mask_target: [B,K_out_max] boolean, True for j < target_len[b]
+        """
+        assert x.dim() == 3 and x.shape[1] == self.K_base
+        B, K, da = x.shape
+        device = x.device
+        dtype = x.dtype
+        K_out = self.K_out_max
+
+        # clamp target_len to [1, K_out]
+        tgt = target_len.to(device=device).long().clamp(min=1, max=K_out)  # [B]
+
+        # j indices [0..K_out-1]
+        j_long = torch.arange(K_out, device=device, dtype=torch.long)[None, :]  # [1,K_out]
+        j = j_long.to(dtype=dtype).expand(B, -1)  # [B,K_out]
+
+        # mask indicating which output steps are "used"
+        mask_target = j_long.expand(B, -1) < tgt[:, None]  # [B,K_out] bool
+
+        # build continuous sampling times t[b,j]
+        if self.mode == "extrapolate":
+            # physical time: t = j
+            t = j
+        else:
+            # stretch mode or auto mode: t = j * (K-1)/(tgt-1)
+            denom = (tgt - 1).clamp(min=1).to(dtype=dtype)  # avoid /0
+            scale = (float(K - 1) / denom)                  # [B]
+            t_stretch = j * scale[:, None]                  # [B,K_out]
+            if self.mode == "stretch":
+                t = t_stretch
+            else:
+                # auto
+                use_stretch = (tgt <= K)                    # [B]
+                t = torch.where(use_stretch[:, None], t_stretch, j)
+
+        # --- interpolation part using grid_sample (differentiable w.r.t grid) ---
+        # grid_sample expects input [B,C,H,W], here treat sequence as W dimension, H=1
+        inp = x.permute(0, 2, 1).unsqueeze(2)  # [B,da,1,K]
+
+        # normalized x coordinate in [-1,1] for grid_sample
+        # For interpolation, clamp sampling times into [0, K-1] before normalizing
+        t_clamped = t.clamp(min=0.0, max=float(K - 1))
+        x_norm = (t_clamped / float(K - 1)) * 2.0 - 1.0  # [B,K_out]
+        y_norm = torch.zeros_like(x_norm)                # y=0 because H=1
+
+        grid = torch.stack([x_norm, y_norm], dim=-1)     # [B,K_out,2]
+        grid = grid.unsqueeze(1)                         # [B,1,K_out,2] => out H=1, W=K_out
+
+        # bilinear on width dimension
+        y_interp = F.grid_sample(
+            inp, grid,
+            mode="bilinear",
+            padding_mode="border",   # clamps out-of-range to border (we’ll replace with linear extrap below)
+            align_corners=True
+        )  # [B,da,1,K_out]
+        y = y_interp.squeeze(2).permute(0, 2, 1).contiguous()  # [B,K_out,da]
+
+        # --- linear extrapolation beyond ends (still differentiable w.r.t x) ---
+        # forward extrapolation for t > K-1
+        if K >= 2:
+            last = x[:, K - 1, :]                      # [B,da]
+            prev = x[:, K - 2, :]                      # [B,da]
+            slope_last = last - prev                   # [B,da]
+
+            first = x[:, 0, :]
+            nxt = x[:, 1, :]
+            slope_first = nxt - first
+        else:
+            last = x[:, 0, :]
+            slope_last = torch.zeros_like(last)
+            first = x[:, 0, :]
+            slope_first = torch.zeros_like(first)
+
+        over = (t > float(K - 1))
+        if over.any():
+            dt_over = (t - float(K - 1)).clamp(min=0.0)        # [B,K_out]
+            y_over = last[:, None, :] + dt_over.unsqueeze(-1) * slope_last[:, None, :]
+            y = torch.where(over.unsqueeze(-1), y_over, y)
+
+        under = (t < 0.0)
+        if under.any():
+            dt_under = (t - 0.0).clamp(max=0.0)                # negative
+            y_under = first[:, None, :] + dt_under.unsqueeze(-1) * slope_first[:, None, :]
+            y = torch.where(under.unsqueeze(-1), y_under, y)
+
+        return y, mask_target
+
+
+# -----------------------------
+# Raw episodic dataset (YOU implement / keep as-is)
 # -----------------------------
 
 class EpisodeDataset(Dataset):
-    """
-    You must implement this to load your episodes.
-
-    Each __getitem__ should return a dict containing:
-
-    Required:
-      - "object_id": int
-      - "actions":   FloatTensor [T, action_dim]
-      - "stage_id":  LongTensor  [T]  (stage id for each action step)
-
-    Observations:
-      Either time-varying or static (both supported by wrapper):
-        - "point_xyz":  FloatTensor [T,N,3] OR [N,3]
-        - "point_feats":FloatTensor [T,N,dp] OR [N,dp] OR None (optional)
-        - "tactile_xyz":FloatTensor [T,M,3] OR [M,3] OR None
-        - "tactile_feats":FloatTensor [T,M,dt] OR [M,dt] OR None
-
-    Notes:
-    - If you don't have point_feats, set dp=0 in config and return None.
-    - If you don't have tactile, return None for tactile_xyz/tactile_feats.
-    - Stage ids should be in [0, num_stages-1]. For your binary stage, that's {0,1}.
-    """
-
     def __init__(self, data_root: str, split: str) -> None:
         super().__init__()
         self.data_root = data_root
         self.split = split
-
-        # Example: episodes stored as .pt under data_root/split/*.pt
         self.files = sorted(glob.glob(os.path.join(data_root, split, "*.pt")))
         if len(self.files) == 0:
             raise RuntimeError(f"No episode files found at: {os.path.join(data_root, split, '*.pt')}")
@@ -160,108 +258,156 @@ class EpisodeDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        path = self.files[idx]
-        ep = torch.load(path, map_location="cpu")
-
-        # EXPECTED keys in ep (you can rename here):
-        # ep["object_id"] : int
-        # ep["actions"]   : [T,da]
-        # ep["stage_id"]  : [T]
-        # ep["point_xyz"] : [T,N,3] or [N,3]
-        # ep.get("point_feats")
-        # ep.get("tactile_xyz"), ep.get("tactile_feats")
-
-        return ep
+        return torch.load(self.files[idx], map_location="cpu")
 
 
 # -----------------------------
-# Wrapper: converts episodes -> stage-aligned chunk samples
+# Wrapper: episodes -> stage-segment chunks (no stage-crossing targets)
 # -----------------------------
 
-class StageChunkDataset(Dataset):
+def _get_obs_at(x: Optional[torch.Tensor], t0: int) -> Optional[torch.Tensor]:
+    if x is None:
+        return None
+    if x.dim() == 2:
+        return x
+    if x.dim() == 3:
+        return x[t0]
+    raise ValueError(f"Unsupported obs tensor shape: {tuple(x.shape)}")
+
+
+def _get_action_pair(
+    ep: Dict[str, Any],
+    action_dim_ee: int,
+    action_dim_dex: int,
+    actions_key: str,
+    actions_ee_key: str,
+    actions_dex_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Converts episodic (actions, stage_id per step) into per-sample stage chunks.
+    Returns:
+      actions_ee:  [T, action_dim_ee]
+      actions_dex: [T, action_dim_dex]
+    """
+    if actions_ee_key in ep and actions_dex_key in ep:
+        a_ee = torch.as_tensor(ep[actions_ee_key], dtype=torch.float32)
+        a_dx = torch.as_tensor(ep[actions_dex_key], dtype=torch.float32)
+        if a_ee.shape[-1] != action_dim_ee:
+            raise ValueError(f"{actions_ee_key} last dim {a_ee.shape[-1]} != action_dim_ee={action_dim_ee}")
+        if a_dx.shape[-1] != action_dim_dex:
+            raise ValueError(f"{actions_dex_key} last dim {a_dx.shape[-1]} != action_dim_dex={action_dim_dex}")
+        return a_ee, a_dx
 
-    Produces items:
-      - point_xyz:    [N,3]
-      - point_feats:  [N,dp] (or [N,0] if dp=0)
-      - tactile_xyz:  [M,3] or None
-      - tactile_feats:[M,dt] or None
-      - object_id:    int
-      - stage:        int
-      - actions_gt:   [Kmax, action_dim] padded
-      - actions_mask: [Kmax] boolean valid
+    if actions_key in ep:
+        a = torch.as_tensor(ep[actions_key], dtype=torch.float32)
+        if a.shape[-1] == (action_dim_ee + action_dim_dex):
+            a_ee = a[..., :action_dim_ee]
+            a_dx = a[..., action_dim_ee:action_dim_ee + action_dim_dex]
+            return a_ee, a_dx
+
+        raise ValueError(
+            f"Episode has '{actions_key}' with last dim {a.shape[-1]}, "
+            f"but expected action_dim_ee+action_dim_dex = {action_dim_ee+action_dim_dex}. "
+            f"Either provide '{actions_ee_key}' and '{actions_dex_key}' keys, "
+            f"or ensure '{actions_key}' matches the concatenated dims."
+        )
+
+    raise ValueError(
+        f"Episode must contain either ('{actions_ee_key}','{actions_dex_key}') "
+        f"or '{actions_key}'."
+    )
+
+
+class StageSegmentChunkDataset(Dataset):
+    """
+    Produces training samples that DO NOT cross stage boundaries.
+
+    Each item:
+      - obs at t0
+      - stage at t0
+      - action chunks for both policies, sliced until stage segment end
+      - padded to K_gt_max for collate
+
+    Note:
+      We do NOT force a specific chunk size here.
+      We just ensure the GT chunk doesn't include actions from the next stage segment.
     """
 
     def __init__(
         self,
         episodes: EpisodeDataset,
-        action_dim: int,
-        Kmax: int,
-        stage_chunk_sizes: Tuple[int, int],
+        action_dim_ee: int,
+        action_dim_dex: int,
+        K_gt_max: int,
         dp: int,
         dt: int,
+        min_steps_in_stage: int,
+        actions_key: str,
+        actions_ee_key: str,
+        actions_dex_key: str,
     ) -> None:
         super().__init__()
         self.episodes = episodes
-        self.action_dim = action_dim
-        self.Kmax = Kmax
-        self.stage_chunk_sizes = stage_chunk_sizes
-        self.dp = dp
-        self.dt = dt
+        self.action_dim_ee = int(action_dim_ee)
+        self.action_dim_dex = int(action_dim_dex)
+        self.K_gt_max = int(K_gt_max)
+        self.dp = int(dp)
+        self.dt = int(dt)
+        self.min_steps_in_stage = int(min_steps_in_stage)
+        self.actions_key = actions_key
+        self.actions_ee_key = actions_ee_key
+        self.actions_dex_key = actions_dex_key
 
-        # Build an index of valid (episode_idx, t0) where stage stays constant for >= K_stage steps.
-        self.index: List[Tuple[int, int]] = []
+        # index holds (episode_idx, t0, t_end) where [t0, t_end) is same-stage segment
+        self.index: List[Tuple[int, int, int]] = []
+
         for eidx in range(len(self.episodes)):
             ep = self.episodes[eidx]
             stage_id = torch.as_tensor(ep["stage_id"], dtype=torch.long)  # [T]
             T = int(stage_id.shape[0])
 
-            # run-length encoding
             t = 0
             while t < T:
                 s = int(stage_id[t].item())
                 t2 = t + 1
                 while t2 < T and int(stage_id[t2].item()) == s:
                     t2 += 1
+
                 seg_len = t2 - t
-                if s in (0, 1):
-                    K_stage = self.stage_chunk_sizes[s]
-                    # any start inside [t, t2-K_stage] is valid
-                    last_start = t2 - K_stage
-                    for t0 in range(t, max(t, last_start) + 1):
-                        self.index.append((eidx, t0))
-                # advance
+                if seg_len >= self.min_steps_in_stage:
+                    last_start = t2 - self.min_steps_in_stage
+                    for t0 in range(t, last_start + 1):
+                        self.index.append((eidx, t0, t2))
+
                 t = t2
 
         if len(self.index) == 0:
-            raise RuntimeError("No valid stage-chunks found. Check stage ids and chunk sizes.")
+            raise RuntimeError(
+                "No valid stage-segment samples found. "
+                "Try reducing --min_steps_in_stage."
+            )
 
     def __len__(self) -> int:
         return len(self.index)
 
-    def _get_obs_at(self, x: Optional[torch.Tensor], t0: int) -> Optional[torch.Tensor]:
-        if x is None:
-            return None
-        if x.dim() == 2:
-            return x  # [N,3] or [N,dp] static
-        if x.dim() == 3:
-            return x[t0]  # [N,3] time-varying
-        raise ValueError(f"Unsupported obs tensor shape: {tuple(x.shape)}")
-
     def __getitem__(self, i: int) -> Dict[str, Any]:
-        eidx, t0 = self.index[i]
+        eidx, t0, t_end = self.index[i]
         ep = self.episodes[eidx]
 
         object_id = int(ep["object_id"])
-        actions = torch.as_tensor(ep["actions"], dtype=torch.float32)  # [T,da]
-        stage_id = torch.as_tensor(ep["stage_id"], dtype=torch.long)   # [T]
+        stage_id = torch.as_tensor(ep["stage_id"], dtype=torch.long)
         stage = int(stage_id[t0].item())
 
-        assert actions.shape[-1] == self.action_dim, "action_dim mismatch"
+        actions_ee, actions_dex = _get_action_pair(
+            ep,
+            action_dim_ee=self.action_dim_ee,
+            action_dim_dex=self.action_dim_dex,
+            actions_key=self.actions_key,
+            actions_ee_key=self.actions_ee_key,
+            actions_dex_key=self.actions_dex_key,
+        )
 
-        # Observation at t0
-        point_xyz = self._get_obs_at(torch.as_tensor(ep["point_xyz"], dtype=torch.float32), t0)  # [N,3]
+        # obs at t0
+        point_xyz = _get_obs_at(torch.as_tensor(ep["point_xyz"], dtype=torch.float32), t0)
 
         # point feats optional
         point_feats_raw = ep.get("point_feats", None)
@@ -270,7 +416,7 @@ class StageChunkDataset(Dataset):
         else:
             if point_feats_raw is None:
                 raise ValueError("dp>0 but episode has no point_feats. Set dp=0 or provide point_feats.")
-            point_feats = self._get_obs_at(torch.as_tensor(point_feats_raw, dtype=torch.float32), t0)
+            point_feats = _get_obs_at(torch.as_tensor(point_feats_raw, dtype=torch.float32), t0)
             assert point_feats.shape[-1] == self.dp
 
         # tactile optional
@@ -279,23 +425,29 @@ class StageChunkDataset(Dataset):
         tactile_xyz = None
         tactile_feats = None
         if tactile_xyz_raw is not None and tactile_feats_raw is not None:
-            tactile_xyz = self._get_obs_at(torch.as_tensor(tactile_xyz_raw, dtype=torch.float32), t0)
-            tactile_feats = self._get_obs_at(torch.as_tensor(tactile_feats_raw, dtype=torch.float32), t0)
-            assert tactile_feats.shape[-1] == self.dt
+            tactile_xyz = _get_obs_at(torch.as_tensor(tactile_xyz_raw, dtype=torch.float32), t0)
+            tactile_feats = _get_obs_at(torch.as_tensor(tactile_feats_raw, dtype=torch.float32), t0)
+            if self.dt > 0:
+                assert tactile_feats.shape[-1] == self.dt
 
-        # GT action chunk (start at t0)
-        gt_slice = actions[t0:]  # [T-t0,da]
-        actions_gt, actions_mask = pad_actions_to_Kmax(gt_slice, self.Kmax)
+        # IMPORTANT: slice only until stage segment end (no crossing)
+        ee_slice = actions_ee[t0:t_end]    # [L, dim_ee]
+        dx_slice = actions_dex[t0:t_end]   # [L, dim_dex]
+
+        actions_gt_ee, actions_mask_ee = pad_actions_to_Kmax(ee_slice, self.K_gt_max)
+        actions_gt_dex, actions_mask_dex = pad_actions_to_Kmax(dx_slice, self.K_gt_max)
 
         return dict(
-            point_xyz=point_xyz,               # [N,3]
-            point_feats=point_feats,           # [N,dp]
-            tactile_xyz=tactile_xyz,           # [M,3] or None
-            tactile_feats=tactile_feats,       # [M,dt] or None
-            object_id=object_id,               # int
-            stage=stage,                       # int
-            actions_gt=actions_gt,             # [Kmax,da]
-            actions_mask=actions_mask,         # [Kmax]
+            point_xyz=point_xyz,
+            point_feats=point_feats,
+            tactile_xyz=tactile_xyz,
+            tactile_feats=tactile_feats,
+            object_id=object_id,
+            stage=stage,
+            actions_gt_ee=actions_gt_ee,
+            actions_mask_ee=actions_mask_ee,
+            actions_gt_dex=actions_gt_dex,
+            actions_mask_dex=actions_mask_dex,
         )
 
 
@@ -303,43 +455,38 @@ class StageChunkDataset(Dataset):
 # Collate
 # -----------------------------
 
-def collate_stage_chunks(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """
-    Pads tactile (M) to max in batch.
-    Assumes point cloud N is fixed (recommended). If variable, you should pre-sample to fixed N in EpisodeDataset.
-    """
+def collate_stage_segments_dual(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     B = len(batch)
 
-    # stack points (require fixed N)
+    # points must share N
     N0 = batch[0]["point_xyz"].shape[0]
     for b in batch:
         if b["point_xyz"].shape[0] != N0:
-            raise ValueError("Variable N detected. Please downsample point cloud to fixed N in your dataset.")
+            raise ValueError("Variable N detected. Downsample point clouds to fixed N in EpisodeDataset.")
 
-    point_xyz = torch.stack([b["point_xyz"] for b in batch], dim=0)         # [B,N,3]
-    point_feats = torch.stack([b["point_feats"] for b in batch], dim=0)     # [B,N,dp]
+    point_xyz = torch.stack([b["point_xyz"] for b in batch], dim=0)
+    point_feats = torch.stack([b["point_feats"] for b in batch], dim=0)
 
-    # stages / object
-    stage = torch.tensor([b["stage"] for b in batch], dtype=torch.long)     # [B]
-    object_id = torch.tensor([b["object_id"] for b in batch], dtype=torch.long)  # [B]
+    stage = torch.tensor([b["stage"] for b in batch], dtype=torch.long)
+    object_id = torch.tensor([b["object_id"] for b in batch], dtype=torch.long)
 
-    # actions
-    actions_gt = torch.stack([b["actions_gt"] for b in batch], dim=0)       # [B,Kmax,da]
-    actions_mask = torch.stack([b["actions_mask"] for b in batch], dim=0)   # [B,Kmax]
+    actions_gt_ee = torch.stack([b["actions_gt_ee"] for b in batch], dim=0)
+    actions_mask_ee = torch.stack([b["actions_mask_ee"] for b in batch], dim=0)
 
-    # tactile pad
-    # represent None as empty [0,3]/[0,dt]
+    actions_gt_dex = torch.stack([b["actions_gt_dex"] for b in batch], dim=0)
+    actions_mask_dex = torch.stack([b["actions_mask_dex"] for b in batch], dim=0)
+
+    # tactile padding
     tactile_xyz_list = []
     tactile_feats_list = []
     for b in batch:
         if b["tactile_xyz"] is None or b["tactile_feats"] is None:
             tactile_xyz_list.append(torch.zeros((0, 3), dtype=torch.float32))
-            tactile_feats_list.append(torch.zeros((0, 0), dtype=torch.float32))  # dt unknown here
+            tactile_feats_list.append(torch.zeros((0, 0), dtype=torch.float32))
         else:
             tactile_xyz_list.append(b["tactile_xyz"])
             tactile_feats_list.append(b["tactile_feats"])
 
-    # infer dt from first non-empty
     dt = None
     for tf in tactile_feats_list:
         if tf.numel() > 0:
@@ -349,7 +496,7 @@ def collate_stage_chunks(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]
         dt = 0
 
     Mmax = max([t.shape[0] for t in tactile_xyz_list]) if B > 0 else 0
-    tactile_count = torch.tensor([t.shape[0] for t in tactile_xyz_list], dtype=torch.long)  # [B]
+    tactile_count = torch.tensor([t.shape[0] for t in tactile_xyz_list], dtype=torch.long)
 
     if Mmax > 0:
         tactile_xyz = torch.zeros((B, Mmax, 3), dtype=torch.float32)
@@ -371,159 +518,62 @@ def collate_stage_chunks(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]
         tactile_count=tactile_count,
         stage=stage,
         object_id=object_id,
-        actions_gt=actions_gt,
-        actions_mask=actions_mask,
+        actions_gt_ee=actions_gt_ee,
+        actions_mask_ee=actions_mask_ee,
+        actions_gt_dex=actions_gt_dex,
+        actions_mask_dex=actions_mask_dex,
     )
 
 
 # -----------------------------
-# Train / Eval
+# Object-id -> target chunk length
 # -----------------------------
 
-def run_one_epoch(
-    model: MultiStageTactilePointCloudTransformer,
-    loader: DataLoader,
-    device: torch.device,
-    optimizer: Optional[torch.optim.Optimizer],
+def load_object_chunk_schedule(
     num_objects: int,
-    max_chunk_size: int,
-    grad_clip: float,
-    use_amp: bool,
-) -> Dict[str, float]:
-    is_train = optimizer is not None
-    model.train(is_train)
+    default_len: int,
+    json_path: Optional[str],
+    list_vals: Optional[List[int]],
+) -> torch.Tensor:
+    """
+    Returns: LongTensor [num_objects] with desired target chunk length per object_id.
+    """
+    schedule = torch.full((num_objects,), int(default_len), dtype=torch.long)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and device.type == "cuda"))
+    if list_vals is not None and len(list_vals) > 0:
+        if len(list_vals) != num_objects:
+            raise ValueError(f"--object_chunk_sizes must have length num_objects={num_objects}")
+        schedule = torch.tensor(list_vals, dtype=torch.long)
+        return schedule
 
-    total = 0
-    sum_loss = 0.0
+    if json_path is None:
+        return schedule
 
-    for batch in loader:
-        # move
-        point_xyz = batch["point_xyz"].to(device)
-        point_feats = batch["point_feats"].to(device)
-        tactile_xyz = batch["tactile_xyz"].to(device)
-        tactile_feats = batch["tactile_feats"].to(device)
-        tactile_count = batch["tactile_count"].to(device)
-        stage = batch["stage"].to(device)
-        object_id = batch["object_id"].to(device)
-        actions_gt = batch["actions_gt"].to(device)
-        actions_mask = batch["actions_mask"].to(device)
+    with open(json_path, "r") as f:
+        data = json.load(f)
 
-        B = point_xyz.shape[0]
-        total += B
+    if isinstance(data, list):
+        if len(data) != num_objects:
+            raise ValueError(f"object_chunk_json list must have length num_objects={num_objects}")
+        schedule = torch.tensor([int(x) for x in data], dtype=torch.long)
+        return schedule
 
-        object_onehot = make_object_onehot(object_id, num_objects).to(device)
+    if isinstance(data, dict):
+        for k, v in data.items():
+            oid = int(k)
+            if oid < 0 or oid >= num_objects:
+                continue
+            schedule[oid] = int(v)
+        return schedule
 
-        # auto AABB from point cloud
-        aabb_min, aabb_max = compute_aabb_from_points(point_xyz)
-
-        if is_train:
-            optimizer.zero_grad(set_to_none=True)
-
-        # Important:
-        # Your model skeleton requires uniform stage within the forwarded batch,
-        # so we group by stage (and also by has_tactile to avoid passing fake tactile for empty).
-        unique_stages = torch.unique(stage).tolist()
-
-        with torch.cuda.amp.autocast(enabled=(use_amp and device.type == "cuda")):
-            loss_batch = 0.0
-            groups = 0
-
-            for s in unique_stages:
-                stage_mask = (stage == s)
-                if stage_mask.sum() == 0:
-                    continue
-
-                # split into tactile-present / tactile-empty
-                has_tac = tactile_count > 0
-
-                for tac_flag in (False, True):
-                    idx = stage_mask & (has_tac == tac_flag)
-                    if idx.sum() == 0:
-                        continue
-
-                    # gather group tensors
-                    px = point_xyz[idx]
-                    pf = point_feats[idx]
-                    st = stage[idx]
-                    oo = object_onehot[idx]
-                    amin = aabb_min[idx]
-                    amax = aabb_max[idx]
-                    agt = actions_gt[idx]       # [Bg,Kmax,da]
-                    amask = actions_mask[idx]   # [Bg,Kmax]
-
-                    if tac_flag:
-                        tx = tactile_xyz[idx]
-                        tf = tactile_feats[idx]
-                    else:
-                        tx = None
-                        tf = None
-
-                    Bg = px.shape[0]
-                    planes = model.init_planes(Bg, device=device, dtype=px.dtype)
-
-                    out = model.forward_macro_step(
-                        point_xyz=px,
-                        point_feats=pf,
-                        tactile_xyz=tx,
-                        tactile_feats=tf,
-                        stage=st,
-                        object_onehot=oo,
-                        aabb_min=amin,
-                        aabb_max=amax,
-                        planes=planes,
-                        actions_gt=agt,
-                        teacher_forcing=True,
-                    )
-
-                    pred = out["pred_actions"]     # [Bg,K,da]
-                    K = int(out["K"].item())
-
-                    # loss on first K, masked by validity (in case you padded)
-                    predK = pred[:, :K, :]
-                    gtK = agt[:, :K, :]
-                    maskK = amask[:, :K]
-
-                    loss_g = masked_mse(predK, gtK, maskK)
-                    loss_batch = loss_batch + loss_g
-                    groups += 1
-
-            if groups > 0:
-                loss_batch = loss_batch / float(groups)
-
-        if is_train:
-            scaler.scale(loss_batch).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-
-        sum_loss += float(loss_batch.detach().item()) * B
-
-    return {"loss": sum_loss / max(1, total)}
-
-
-def save_ckpt(path: str, model: nn.Module, opt: torch.optim.Optimizer, epoch: int, cfg: ModelConfig, args: argparse.Namespace):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "opt": opt.state_dict(),
-            "cfg": asdict(cfg),
-            "args": vars(args),
-        },
-        path,
-    )
+    raise ValueError("object_chunk_json must be a list or dict")
 
 
 # -----------------------------
-# Config
+# Config builder (fixed K_base=32, no adaptive decoder chunking)
 # -----------------------------
 
-def build_cfg(args: argparse.Namespace) -> ModelConfig:
+def build_cfg(args: argparse.Namespace, action_dim: int, K_base: int) -> ModelConfig:
     cfg = ModelConfig(
         plane=TriPlaneConfig(res=args.plane_res, channels=args.plane_channels),
         tokenizer=TokenizerConfig(
@@ -547,21 +597,289 @@ def build_cfg(args: argparse.Namespace) -> ModelConfig:
             num_layers=args.dec_layers,
             dim_feedforward=args.ffn_dim,
             dropout=args.dropout,
-            action_dim=args.action_dim,
-            max_chunk_size=args.max_chunk_size,
-            stage_chunk_sizes=(args.stage0_chunk, args.stage1_chunk),
-            use_adaptive_chunking=args.adaptive_chunking,
-            candidate_chunk_sizes=tuple(args.candidate_chunks),
+            action_dim=action_dim,
+            max_chunk_size=K_base,
+            stage_chunk_sizes=(K_base, K_base),
+            use_adaptive_chunking=False,              # IMPORTANT: disabled
+            candidate_chunk_sizes=tuple([K_base]),    # unused but safe
         ),
         num_stages=args.num_stages,
         num_objects=args.num_objects,
-        writer_cond_dim=None,  # auto = 3*d_model
+        writer_cond_dim=None,
     )
     return cfg
 
 
 # -----------------------------
-# Main
+# Train / Eval
+# -----------------------------
+
+def _policy_group_loss(
+    model: MultiStageTactilePointCloudTransformer,
+    resampler: DifferentiableChunkResampler,
+    *,
+    idx: torch.Tensor,                 # [B] bool
+    point_xyz: torch.Tensor,
+    point_feats: torch.Tensor,
+    tactile_xyz: torch.Tensor,
+    tactile_feats: torch.Tensor,
+    tactile_count: torch.Tensor,
+    stage: torch.Tensor,
+    object_onehot: torch.Tensor,
+    aabb_min: torch.Tensor,
+    aabb_max: torch.Tensor,
+    actions_gt_full: torch.Tensor,     # [B,K_gt_max,da]
+    actions_mask_full: torch.Tensor,   # [B,K_gt_max]
+    target_len: torch.Tensor,          # [B] long
+    K_base: int,
+    teacher_forcing: bool,
+) -> Tuple[torch.Tensor, int]:
+    """
+    Computes average loss over selected subset idx.
+    Returns (loss, num_groups_used) where num_groups_used counts tactile/non-tactile groups.
+    """
+    if idx.sum().item() == 0:
+        return torch.zeros((), device=point_xyz.device), 0
+
+    has_tac = tactile_count > 0
+    loss_accum = 0.0
+    groups = 0
+
+    for tac_flag in (False, True):
+        sub = idx & (has_tac == tac_flag)
+        if sub.sum().item() == 0:
+            continue
+
+        px = point_xyz[sub]
+        pf = point_feats[sub]
+        st = stage[sub]
+        oo = object_onehot[sub]
+        amin = aabb_min[sub]
+        amax = aabb_max[sub]
+        gt_full = actions_gt_full[sub]         # [Bg,K_gt,da]
+        mask_full = actions_mask_full[sub]     # [Bg,K_gt]
+        tgt_len = target_len[sub]              # [Bg]
+
+        # teacher-forcing input is only first K_base steps
+        gt_in = gt_full[:, :K_base, :]         # [Bg,K_base,da]
+
+        if tac_flag:
+            tx = tactile_xyz[sub]
+            tf = tactile_feats[sub]
+        else:
+            tx = None
+            tf = None
+
+        Bg = px.shape[0]
+        planes = model.init_planes(Bg, device=px.device, dtype=px.dtype)
+
+        out = model.forward_macro_step(
+            point_xyz=px,
+            point_feats=pf,
+            tactile_xyz=tx,
+            tactile_feats=tf,
+            stage=st,
+            object_onehot=oo,
+            aabb_min=amin,
+            aabb_max=amax,
+            planes=planes,
+            actions_gt=gt_in,
+            teacher_forcing=teacher_forcing,
+        )
+
+        pred_base = out["pred_actions"]   # [Bg,K_base,da] (expected)
+        # Post-process to K_gt_max with object-specific target_len
+        pred_full, mask_target = resampler(pred_base, tgt_len)  # [Bg,K_gt,da], [Bg,K_gt]
+
+        # Final mask:
+        # - valid GT inside stage segment (mask_full)
+        # - only compare up to target_len (mask_target)
+        mask = mask_full & mask_target
+
+        loss_g = masked_mse(pred_full, gt_full, mask)
+        loss_accum = loss_accum + loss_g
+        groups += 1
+
+    if groups > 0:
+        loss_accum = loss_accum / float(groups)
+
+    return loss_accum, groups
+
+
+def run_one_epoch_dual(
+    model_ee: MultiStageTactilePointCloudTransformer,
+    model_dex: MultiStageTactilePointCloudTransformer,
+    resampler_ee: DifferentiableChunkResampler,
+    resampler_dex: DifferentiableChunkResampler,
+    loader: DataLoader,
+    device: torch.device,
+    opt_ee: Optional[torch.optim.Optimizer],
+    opt_dex: Optional[torch.optim.Optimizer],
+    object_chunk_schedule: torch.Tensor,   # [num_objects] long (cpu ok)
+    *,
+    num_objects: int,
+    K_base: int,
+    ee_stage_id: int,
+    dex_stage_id: int,
+    grad_clip: float,
+    use_amp: bool,
+    teacher_forcing: bool,
+) -> Dict[str, float]:
+    is_train = (opt_ee is not None) or (opt_dex is not None)
+    model_ee.train(is_train)
+    model_dex.train(is_train)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and device.type == "cuda"))
+
+    total = 0
+    sum_loss = 0.0
+    sum_loss_ee = 0.0
+    sum_loss_dex = 0.0
+
+    object_chunk_schedule = object_chunk_schedule.to(device=device)  # [num_objects]
+
+    for batch in loader:
+        point_xyz = batch["point_xyz"].to(device)
+        point_feats = batch["point_feats"].to(device)
+        tactile_xyz = batch["tactile_xyz"].to(device)
+        tactile_feats = batch["tactile_feats"].to(device)
+        tactile_count = batch["tactile_count"].to(device)
+        stage = batch["stage"].to(device)
+        object_id = batch["object_id"].to(device)
+
+        actions_gt_ee = batch["actions_gt_ee"].to(device)
+        actions_mask_ee = batch["actions_mask_ee"].to(device)
+        actions_gt_dex = batch["actions_gt_dex"].to(device)
+        actions_mask_dex = batch["actions_mask_dex"].to(device)
+
+        B = point_xyz.shape[0]
+        total += B
+
+        object_onehot = make_object_onehot(object_id, num_objects).to(device)
+        aabb_min, aabb_max = compute_aabb_from_points(point_xyz)
+
+        # object-specific target length for post-processing
+        target_len = object_chunk_schedule[object_id].long()  # [B]
+
+        if is_train:
+            if opt_ee is not None:
+                opt_ee.zero_grad(set_to_none=True)
+            if opt_dex is not None:
+                opt_dex.zero_grad(set_to_none=True)
+
+        with torch.cuda.amp.autocast(enabled=(use_amp and device.type == "cuda")):
+            idx_ee = (stage == int(ee_stage_id))
+            idx_dx = (stage == int(dex_stage_id))
+
+            loss_ee = torch.zeros((), device=device)
+            loss_dx = torch.zeros((), device=device)
+
+            if idx_ee.any():
+                loss_ee, _ = _policy_group_loss(
+                    model_ee, resampler_ee,
+                    idx=idx_ee,
+                    point_xyz=point_xyz,
+                    point_feats=point_feats,
+                    tactile_xyz=tactile_xyz,
+                    tactile_feats=tactile_feats,
+                    tactile_count=tactile_count,
+                    stage=stage,
+                    object_onehot=object_onehot,
+                    aabb_min=aabb_min,
+                    aabb_max=aabb_max,
+                    actions_gt_full=actions_gt_ee,
+                    actions_mask_full=actions_mask_ee,
+                    target_len=target_len,
+                    K_base=K_base,
+                    teacher_forcing=teacher_forcing,
+                )
+
+            if idx_dx.any():
+                loss_dx, _ = _policy_group_loss(
+                    model_dex, resampler_dex,
+                    idx=idx_dx,
+                    point_xyz=point_xyz,
+                    point_feats=point_feats,
+                    tactile_xyz=tactile_xyz,
+                    tactile_feats=tactile_feats,
+                    tactile_count=tactile_count,
+                    stage=stage,
+                    object_onehot=object_onehot,
+                    aabb_min=aabb_min,
+                    aabb_max=aabb_max,
+                    actions_gt_full=actions_gt_dex,
+                    actions_mask_full=actions_mask_dex,
+                    target_len=target_len,
+                    K_base=K_base,
+                    teacher_forcing=teacher_forcing,
+                )
+
+            # combine (you can weight these if desired)
+            loss = loss_ee + loss_dx
+
+        if is_train and loss.requires_grad:
+            scaler.scale(loss).backward()
+
+            if grad_clip > 0:
+                if opt_ee is not None:
+                    scaler.unscale_(opt_ee)
+                if opt_dex is not None:
+                    scaler.unscale_(opt_dex)
+
+                if opt_ee is not None:
+                    nn.utils.clip_grad_norm_(model_ee.parameters(), grad_clip)
+                if opt_dex is not None:
+                    nn.utils.clip_grad_norm_(model_dex.parameters(), grad_clip)
+
+            if opt_ee is not None:
+                scaler.step(opt_ee)
+            if opt_dex is not None:
+                scaler.step(opt_dex)
+            scaler.update()
+
+        sum_loss += float(loss.detach().item()) * B
+        sum_loss_ee += float(loss_ee.detach().item()) * B
+        sum_loss_dex += float(loss_dx.detach().item()) * B
+
+    denom = max(1, total)
+    return {
+        "loss": sum_loss / denom,
+        "loss_ee": sum_loss_ee / denom,
+        "loss_dex": sum_loss_dex / denom,
+    }
+
+
+def save_ckpt_dual(
+    path: str,
+    model_ee: nn.Module,
+    model_dex: nn.Module,
+    opt_ee: Optional[torch.optim.Optimizer],
+    opt_dex: Optional[torch.optim.Optimizer],
+    epoch: int,
+    cfg_ee: ModelConfig,
+    cfg_dex: ModelConfig,
+    args: argparse.Namespace,
+    object_chunk_schedule: torch.Tensor,
+) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_ee": model_ee.state_dict(),
+            "model_dex": model_dex.state_dict(),
+            "opt_ee": (opt_ee.state_dict() if opt_ee is not None else None),
+            "opt_dex": (opt_dex.state_dict() if opt_dex is not None else None),
+            "cfg_ee": asdict(cfg_ee),
+            "cfg_dex": asdict(cfg_dex),
+            "args": vars(args),
+            "object_chunk_schedule": object_chunk_schedule.cpu(),
+        },
+        path,
+    )
+
+
+# -----------------------------
+# Args
 # -----------------------------
 
 def parse_args() -> argparse.Namespace:
@@ -579,9 +897,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--amp", action="store_true")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--teacher_forcing", action="store_true", help="Use teacher forcing for the 32-step base chunk.")
 
     # output
-    p.add_argument("--out_dir", type=str, default="runs/triplane_vla")
+    p.add_argument("--out_dir", type=str, default="runs/triplane_vla_dual_post")
     p.add_argument("--save_every", type=int, default=1)
 
     # model dims
@@ -597,9 +916,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--plane_channels", type=int, default=32)
 
     # input dims
-    p.add_argument("--point_feat_dim", type=int, default=0)   # set 0 if only xyz
-    p.add_argument("--tactile_feat_dim", type=int, default=0) # set 0 if tactile has only xyz (rare)
-    p.add_argument("--action_dim", type=int, default=7)
+    p.add_argument("--point_feat_dim", type=int, default=0)
+    p.add_argument("--tactile_feat_dim", type=int, default=0)
 
     # tactile tokenization
     p.add_argument("--include_tactile_tokens", action="store_true")
@@ -609,52 +927,123 @@ def parse_args() -> argparse.Namespace:
     # stages / objects
     p.add_argument("--num_stages", type=int, default=2)
     p.add_argument("--num_objects", type=int, default=10)
-    p.add_argument("--stage0_chunk", type=int, default=2)
-    p.add_argument("--stage1_chunk", type=int, default=8)
+
+    # policy routing
+    p.add_argument("--ee_stage_id", type=int, default=0)
+    p.add_argument("--dex_stage_id", type=int, default=1)
+
+    # actions: default + per-policy override
+    p.add_argument("--action_dim", type=int, default=7, help="Default action dim (used if policy-specific dims not set).")
+    p.add_argument("--action_dim_ee", type=int, default=None)
+    p.add_argument("--action_dim_dex", type=int, default=None)
+
+    # how to read actions from episode
+    p.add_argument("--actions_key", type=str, default="actions")
+    p.add_argument("--actions_ee_key", type=str, default="actions_ee")
+    p.add_argument("--actions_dex_key", type=str, default="actions_dex")
 
     # chunking
-    p.add_argument("--max_chunk_size", type=int, default=16)
-    p.add_argument("--adaptive_chunking", action="store_true")
-    p.add_argument("--candidate_chunks", type=int, nargs="+", default=[1, 2, 4, 8, 16])
+    p.add_argument("--base_chunk_size", type=int, default=32, help="Fixed model output chunk length (K_base).")
+    p.add_argument("--min_steps_in_stage", type=int, default=1, help="Filter stage segments shorter than this.")
+
+    # postprocess chunk schedule (object id -> target chunk length)
+    p.add_argument("--default_object_chunk", type=int, default=32)
+    p.add_argument("--object_chunk_json", type=str, default=None,
+                   help="JSON file: list length num_objects OR dict {object_id: chunk_len}.")
+    p.add_argument("--object_chunk_sizes", type=int, nargs="+", default=None,
+                   help="Explicit list of chunk sizes length num_objects (overrides json).")
+    p.add_argument("--post_chunk_max", type=int, default=0,
+                   help="Pad horizon for GT/postprocess. 0 => auto = max(base_chunk_size, max(object schedule)).")
+    p.add_argument("--postprocess_mode", type=str, default="auto", choices=["auto", "stretch", "extrapolate"])
 
     return p.parse_args()
 
+
+# -----------------------------
+# Main
+# -----------------------------
 
 def main():
     args = parse_args()
     set_seed(args.seed)
 
+    # resolve per-policy dims
+    action_dim_ee = args.action_dim if args.action_dim_ee is None else args.action_dim_ee
+    action_dim_dex = args.action_dim if args.action_dim_dex is None else args.action_dim_dex
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(args.out_dir, exist_ok=True)
 
-    cfg = build_cfg(args)
+    # object chunk schedule
+    schedule = load_object_chunk_schedule(
+        num_objects=args.num_objects,
+        default_len=args.default_object_chunk,
+        json_path=args.object_chunk_json,
+        list_vals=args.object_chunk_sizes,
+    )
 
-    # Save cfg/args for reproducibility
+    # choose K_gt_max (padded horizon for GT + postprocess output)
+    K_base = int(args.base_chunk_size)  # IMPORTANT: your requested fixed initial output chunk size = 32 by default
+    if args.post_chunk_max > 0:
+        K_gt_max = int(args.post_chunk_max)
+    else:
+        K_gt_max = int(max(K_base, int(schedule.max().item())))
+
+    # build configs/models
+    cfg_ee = build_cfg(args, action_dim=int(action_dim_ee), K_base=K_base)
+    cfg_dex = build_cfg(args, action_dim=int(action_dim_dex), K_base=K_base)
+
+    # save configs
     with open(os.path.join(args.out_dir, "config.json"), "w") as f:
-        json.dump({"cfg": asdict(cfg), "args": vars(args)}, f, indent=2)
+        json.dump(
+            {
+                "cfg_ee": asdict(cfg_ee),
+                "cfg_dex": asdict(cfg_dex),
+                "args": vars(args),
+                "object_chunk_schedule": schedule.tolist(),
+                "K_gt_max": K_gt_max,
+            },
+            f,
+            indent=2,
+        )
 
-    model = MultiStageTactilePointCloudTransformer(cfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    model_ee = MultiStageTactilePointCloudTransformer(cfg_ee).to(device)
+    model_dex = MultiStageTactilePointCloudTransformer(cfg_dex).to(device)
 
-    # Build datasets
+    opt_ee = torch.optim.AdamW(model_ee.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt_dex = torch.optim.AdamW(model_dex.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # post-process modules (differentiable)
+    resampler_ee = DifferentiableChunkResampler(K_base=K_base, K_out_max=K_gt_max, mode=args.postprocess_mode).to(device)
+    resampler_dex = DifferentiableChunkResampler(K_base=K_base, K_out_max=K_gt_max, mode=args.postprocess_mode).to(device)
+
+    # datasets
     ep_train = EpisodeDataset(args.data_root, split="train")
     ep_val = EpisodeDataset(args.data_root, split="val")
 
-    train_ds = StageChunkDataset(
+    train_ds = StageSegmentChunkDataset(
         episodes=ep_train,
-        action_dim=args.action_dim,
-        Kmax=args.max_chunk_size,
-        stage_chunk_sizes=(args.stage0_chunk, args.stage1_chunk),
+        action_dim_ee=action_dim_ee,
+        action_dim_dex=action_dim_dex,
+        K_gt_max=K_gt_max,
         dp=args.point_feat_dim,
         dt=args.tactile_feat_dim,
+        min_steps_in_stage=args.min_steps_in_stage,
+        actions_key=args.actions_key,
+        actions_ee_key=args.actions_ee_key,
+        actions_dex_key=args.actions_dex_key,
     )
-    val_ds = StageChunkDataset(
+    val_ds = StageSegmentChunkDataset(
         episodes=ep_val,
-        action_dim=args.action_dim,
-        Kmax=args.max_chunk_size,
-        stage_chunk_sizes=(args.stage0_chunk, args.stage1_chunk),
+        action_dim_ee=action_dim_ee,
+        action_dim_dex=action_dim_dex,
+        K_gt_max=K_gt_max,
         dp=args.point_feat_dim,
         dt=args.tactile_feat_dim,
+        min_steps_in_stage=args.min_steps_in_stage,
+        actions_key=args.actions_key,
+        actions_ee_key=args.actions_ee_key,
+        actions_dex_key=args.actions_dex_key,
     )
 
     train_loader = DataLoader(
@@ -663,7 +1052,7 @@ def main():
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
-        collate_fn=collate_stage_chunks,
+        collate_fn=collate_stage_segments_dual,
         drop_last=True,
     )
     val_loader = DataLoader(
@@ -672,7 +1061,7 @@ def main():
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
-        collate_fn=collate_stage_chunks,
+        collate_fn=collate_stage_segments_dual,
         drop_last=False,
     )
 
@@ -681,25 +1070,42 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
-        train_stats = run_one_epoch(
-            model=model,
+        train_stats = run_one_epoch_dual(
+            model_ee=model_ee,
+            model_dex=model_dex,
+            resampler_ee=resampler_ee,
+            resampler_dex=resampler_dex,
             loader=train_loader,
             device=device,
-            optimizer=opt,
+            opt_ee=opt_ee,
+            opt_dex=opt_dex,
+            object_chunk_schedule=schedule,
             num_objects=args.num_objects,
-            max_chunk_size=args.max_chunk_size,
+            K_base=K_base,
+            ee_stage_id=args.ee_stage_id,
+            dex_stage_id=args.dex_stage_id,
             grad_clip=args.grad_clip,
             use_amp=args.amp,
+            teacher_forcing=args.teacher_forcing,
         )
-        val_stats = run_one_epoch(
-            model=model,
+
+        val_stats = run_one_epoch_dual(
+            model_ee=model_ee,
+            model_dex=model_dex,
+            resampler_ee=resampler_ee,
+            resampler_dex=resampler_dex,
             loader=val_loader,
             device=device,
-            optimizer=None,
+            opt_ee=None,
+            opt_dex=None,
+            object_chunk_schedule=schedule,
             num_objects=args.num_objects,
-            max_chunk_size=args.max_chunk_size,
+            K_base=K_base,
+            ee_stage_id=args.ee_stage_id,
+            dex_stage_id=args.dex_stage_id,
             grad_clip=0.0,
             use_amp=False,
+            teacher_forcing=args.teacher_forcing,
         )
 
         dt = time.time() - t0
@@ -707,29 +1113,41 @@ def main():
             "epoch": epoch,
             "time_sec": round(dt, 2),
             "train_loss": round(train_stats["loss"], 6),
+            "train_loss_ee": round(train_stats["loss_ee"], 6),
+            "train_loss_dex": round(train_stats["loss_dex"], 6),
             "val_loss": round(val_stats["loss"], 6),
+            "val_loss_ee": round(val_stats["loss_ee"], 6),
+            "val_loss_dex": round(val_stats["loss_dex"], 6),
         }
         print(json.dumps(log))
 
         if epoch % args.save_every == 0:
-            save_ckpt(
+            save_ckpt_dual(
                 os.path.join(args.out_dir, f"ckpt_epoch_{epoch}.pt"),
-                model=model,
-                opt=opt,
+                model_ee=model_ee,
+                model_dex=model_dex,
+                opt_ee=opt_ee,
+                opt_dex=opt_dex,
                 epoch=epoch,
-                cfg=cfg,
+                cfg_ee=cfg_ee,
+                cfg_dex=cfg_dex,
                 args=args,
+                object_chunk_schedule=schedule,
             )
 
         if val_stats["loss"] < best_val:
             best_val = val_stats["loss"]
-            save_ckpt(
+            save_ckpt_dual(
                 os.path.join(args.out_dir, "ckpt_best.pt"),
-                model=model,
-                opt=opt,
+                model_ee=model_ee,
+                model_dex=model_dex,
+                opt_ee=opt_ee,
+                opt_dex=opt_dex,
                 epoch=epoch,
-                cfg=cfg,
+                cfg_ee=cfg_ee,
+                cfg_dex=cfg_dex,
                 args=args,
+                object_chunk_schedule=schedule,
             )
 
     print("Done. Best val loss:", best_val)
@@ -737,8 +1155,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-# adaptive chunk size should be 
