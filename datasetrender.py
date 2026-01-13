@@ -296,7 +296,7 @@ TAIL_SECONDS = 0.0
 
 MJCF_PATH  = "./robot_urdf_genesis/scene.xml"
 # --- MODIFIED: Added path for the separate object XML ---
-OBJECT_MJCF_PATH = "./fruit_asset/strawberry.xml.xml"
+OBJECT_MJCF_PATH = "./fruit_asset/fruit.xml"
 # --- END MODIFIED ---
 
 

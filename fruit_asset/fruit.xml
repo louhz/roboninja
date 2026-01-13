@@ -1,0 +1,158 @@
+<mujoco model="table_knife_strawberry">
+  <compiler
+      meshdir=""
+      angle="radian"
+      coordinate="local"
+      strippath="false"
+      discardvisual="false"
+      inertiafromgeom="true" />
+
+  <option gravity="0 0 -9.81"
+          integrator="RK4"
+          timestep="0.001"
+          cone="pyramidal"
+          impratio="5"
+          tolerance="1e-8">
+    <flag warmstart="enable"/>
+  </option>
+
+  <asset>
+    <texture name="texplane" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.82 0.84 0.87" rgb2="0.92 0.93 0.95"/>
+    <material name="matplane" texture="texplane" texrepeat="4 4" reflectance="0.1"/>
+    <!-- Replace these with your actual mesh paths -->
+    <mesh name="table_mesh"      file="meshes/table.stl"/>
+    <mesh name="knife_mesh"      file="meshes/knife.stl"/>
+    <mesh name="strawberry_mesh" file="meshes/strawberry.stl"/>
+
+    <material name="mat_table"      rgba="0.75 0.75 0.75 1"/>
+    <material name="mat_knife"      rgba="0.70 0.70 0.70 1"/>
+    <material name="mat_strawberry" rgba="0.90 0.20 0.20 1"/>
+  </asset>
+
+  <default>
+    <!-- Default contact settings (copied from your file) -->
+    <geom friction="2.5 1 1"
+          solref="0.002 1"
+          solimp="0.95 0.99 0.001"
+          condim="4"
+          contype="1"
+          conaffinity="1"/>
+  </default>
+
+  <worldbody>
+
+    <!-- ========================= -->
+    <!-- TABLE (typically static)  -->
+    <!-- ========================= -->
+    
+    <geom name="ground" type="plane" size="5 5 0.1" pos="0 0 -0.01" material="matplane"/>
+
+    <!-- <light name="top_light" pos="0.45 0 2.2" dir="0 0 -1" directional="true"/> -->
+    <light name="fill_light" pos="-1.0 -1.2 1.2" dir="0.6 0.6 -1" directional="true" diffuse="0.6 0.6 0.6"/>
+
+    <body name="table_base" pos="0.45175 -0.5 1.89" quat="1 0 0 0">
+      <geom name="table" type="box" size="4.0000 2.0000 0.0600" rgba="0.3 0.3 0.3 1" mass="10.0" condim="3"/>
+  
+      <geom name="leg1" type="cylinder" pos="-3.7000 1.7000 -0.9800" size="0.1000 0.9200" rgba="0.3 0.3 0.3 1"/>
+      <geom name="leg2" type="cylinder" pos="3.7000 1.7000 -0.9800" size="0.1000 0.9200" rgba="0.3 0.3 0.3 1"/>
+      <geom name="leg3" type="cylinder" pos="-3.7000 -1.7000 -0.9800" size="0.1000 0.9200" rgba="0.3 0.3 0.3 1"/>
+      <geom name="leg4" type="cylinder" pos="3.7000 -1.7000 -0.9800" size="0.1000 0.9200" rgba="0.3 0.3 0.3 1"/>
+    </body>
+
+    <body name="table"
+          pos="0 -0.5 2.65"
+          quat="1 0 0 0">
+      <!-- Visual mesh: no collision -->
+      <geom name="table_visual"
+            type="mesh"
+            mesh="table_mesh"
+            material="mat_table"
+            contype="0"
+            conaffinity="0"
+            group="1"/>
+
+      <!-- Collision proxy: use a simple box (edit size/pos to match your table) -->
+      <geom name="table_collision"
+            type="box"
+            pos="0 0 0.0"
+            quat="1 0 0 0"
+            size="0.5 0.5 0.05"
+            condim="3"
+            rgba="1 0 0 0"/>
+    </body>
+
+
+    <!-- ========================= -->
+    <!-- KNIFE (movable by default)-->
+    <!-- ========================= -->
+    <body name="knife"
+          pos="2 0 2.2"
+          quat="1 0 0 0">
+      <!-- If your knife is manipulated, keep it free. If it is attached to a robot, remove this free joint. -->
+      <joint name="knife_free" type="free" damping="0.5" armature="0.001"/>
+
+      <!-- Rough inertial; update with your real knife mass/inertia if known -->
+      <inertial pos="0 0 0" mass="0.10" diaginertia="0.0002 0.0002 0.0002"/>
+
+      <!-- Visual mesh: no collision -->
+      <geom name="knife_visual"
+            type="mesh"
+            mesh="knife_mesh"
+            material="mat_knife"
+            contype="0"
+            conaffinity="0"
+            group="1"/>
+
+      <!-- Collision proxies: use 1–2 thin boxes (fast + stable). Edit to match your knife. -->
+      <geom name="knife_collision_handle"
+            type="box"
+            pos="-0.08 0 0"
+            quat="1 0 0 0"
+            size="0.06 0.012 0.012"
+            condim="3"
+            rgba="1 0 0 0"/>
+
+      <geom name="knife_collision_blade"
+            type="box"
+            pos="0.08 0 0"
+            quat="1 0 0 0"
+            size="0.10 0.008 0.002"
+            condim="3"
+            rgba="1 0 0 0"/>
+    </body>
+
+
+    <!-- ========================= -->
+    <!-- STRAWBERRY (movable)      -->
+    <!-- ========================= -->
+    <body name="strawberry"
+          pos="-2 0 2.2"
+          quat="1 0 0 0">
+      <joint name="strawberry_free" type="free" damping="0.5" armature="0.001"/>
+
+      <!-- Rough inertial; update if you know mass/inertia -->
+      <inertial pos="0 0 0" mass="0.03" diaginertia="0.00008 0.00008 0.00008"/>
+
+      <!-- Visual mesh: no collision -->
+      <geom name="strawberry_visual"
+            type="mesh"
+            mesh="strawberry_mesh"
+            material="mat_strawberry"
+            contype="0"
+            conaffinity="0"
+            group="1"/>
+
+      <!-- Collision: simplest is a sphere/ellipsoid proxy (stable).
+           If you want mesh collision, change type="mesh" mesh="strawberry_mesh". -->
+      <geom name="strawberry_collision"
+            type="sphere"
+            pos="0 0 0"
+            size="0.03"
+            condim="3"
+            rgba="1 0 0 0"/>
+    </body>
+
+  </worldbody>
+</mujoco>
+
