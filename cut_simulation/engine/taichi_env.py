@@ -112,8 +112,8 @@ class TaichiEnv:
         if self.loss is not None:
             self.loss.build(
                 sim=self.simulator,
-                knife=self.agent.effectors[0],
-                bone=self.statics[2]
+                knife=self.agent.effectors[0]
+                # bone=self.statics[2]
             )
 
     def reset_grad(self):

@@ -152,3 +152,9 @@ generated*
 *.txt
 
 *.zip
+
+env*
+
+*.csv
+
+videos

@@ -1,0 +1,12 @@
+defaults:
+  - _self_
+  - bone
+  - knife
+  - loss
+  - render
+  - strawberry
+
+gpu_type: 1
+cuda_id: 0
+horizon: 61
+auto_boundary: false

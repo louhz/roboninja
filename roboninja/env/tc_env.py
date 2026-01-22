@@ -119,6 +119,8 @@ def get_strawberry_env(cfg):
         render_order=None,
     )
 
+
+    # make this bone small enough later
     # taichi_env.add_static(
     #     file=f'{cfg.bone.name}.obj',
     #     material=BONE,
@@ -128,22 +130,16 @@ def get_strawberry_env(cfg):
     #     **cfg.bone
     # )
     taichi_env.add_body(
-        type='splat',
-        file=cfg.strawberry.splat_path,     # <-- you provide this path
-        pos=cfg.strawberry.pos,             # e.g. (0.50, 0.12, 0.50)
-        scale=cfg.strawberry.scale,         # e.g. (0.18, 0.18, 0.18)
-        euler=getattr(cfg.strawberry, 'euler', (0.0, 0.0, 0.0)),
-        voxelize_res=getattr(cfg.strawberry, 'voxelize_res', 256),
-        shell_radius_vox=getattr(cfg.strawberry, 'shell_radius_vox', 2),
-        close_iters=getattr(cfg.strawberry, 'close_iters', 2),
-        normalize=getattr(cfg.strawberry, 'normalize', True),
-        trim_percentile=getattr(cfg.strawberry, 'trim_percentile', 0.5),
-        cache_voxels=getattr(cfg.strawberry, 'cache_voxels', True),
+        type='mesh',
+        filling='grid',
+        file=cfg.strawberry.mesh_path,                     # .obj/.ply/.stl (raw mesh path handled by get_raw_mesh_path)
+        pos=cfg.strawberry.pos,
+        scale=cfg.strawberry.scale,
+        voxelize_res=getattr(cfg.strawberry, "voxelize_res", 256),
 
-        material=MEAT,  # or define a STRAWBERRY material in macros if you want
-        obstacles=[taichi_env.statics[2]],  # keep your original indexing if it’s correct in your env
+        # forwarded into self._add_body('mesh', ..., **kwargs)
+        material=MEAT,                 # keep if indexing is correct
     )
-
     # --- Boundary (keep your original or auto-size) ---
     if getattr(cfg, "auto_boundary", False):
         st_pos = np.array(cfg.strawberry.pos, dtype=np.float32)
@@ -187,7 +183,7 @@ class TCEnv(BaseEnv):
         self.knife_cfg = cut_env_cfg.knife
         self.taichi_env = get_cut_env(cut_env_cfg)
 
-        self.bone = self.taichi_env.statics[2]
+        # self.bone = self.taichi_env.statics[2]
         self.init_state = self.taichi_env.get_state()['state']
         self.taichi_env.apply_agent_action_p(init_action_p)
 
@@ -243,7 +239,7 @@ class TCEnv(BaseEnv):
 
         # use taichi sdf
         particle_sdf = np.array([0.0])
-        self.bone.check_collision(1, np.array([[wrd_pos[0], wrd_pos[1], 0.5]]), particle_sdf)
+        # self.bone.check_collision(1, np.array([[wrd_pos[0], wrd_pos[1], 0.5]]), particle_sdf)
         stop_signal = particle_sdf[0] < 1e-9
         self.collision_array.append(stop_signal)
 
@@ -304,7 +300,7 @@ class TCEnv(BaseEnv):
             particle_sdf = np.zeros([NCC])
             collision_candidates = np.asarray(collision_candidates)
             collision_candidates = np.concatenate([collision_candidates, np.ones([NCC, 1]) * 0.5], axis=1)
-            self.bone.check_collision(NCC, collision_candidates, particle_sdf)
+            # self.bone.check_collision(NCC, collision_candidates, particle_sdf)
             collision_results = particle_sdf < 1e-9
 
             return collision_results

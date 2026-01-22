@@ -34,10 +34,22 @@ class CutLoss:
         self.collision_point_num = 5
 
 
-    def build(self, sim:MPMSimulator, knife:Rigid, bone: Static):
+    # def build(self, sim:MPMSimulator, knife:Rigid, bone: Static):
+    #     self.sim = sim
+    #     self.knife = knife
+    #     self.bone = bone
+
+    #     self.cut_weight[None] = self.weights['cut']
+    #     self.collision_weight[None] = self.weights['collision']
+    #     self.rotation_weight[None] = self.weights['rotation']
+    #     self.move_weight[None] = self.weights['move']
+    #     self.work_weight[None] = self.weights['work']
+
+
+    
+    def build(self, sim:MPMSimulator, knife:Rigid):
         self.sim = sim
         self.knife = knife
-        self.bone = bone
 
         self.cut_weight[None] = self.weights['cut']
         self.collision_weight[None] = self.weights['collision']
@@ -84,8 +96,8 @@ class CutLoss:
             for k in ti.static(range(self.collision_point_num)):
                 dir = ti.Vector([-ti.sin(self.knife.theta_k[i]), ti.cos(self.knife.theta_k[i]), 0], DTYPE_TI)
                 p = self.knife.pos_global[i] + dir * k / (self.collision_point_num - 1) * self.knife.mesh.knife_width[None]
-                sdf = self.bone.sdf(p)
-                self.collision_loss[None] += self.collision_loss_func(ti.max(0.025 - sdf, 0)) / step_num
+                # sdf = self.bone.sdf(p)
+                self.collision_loss[None] += self.collision_loss_func(ti.max(0.025 - 0.001, 0)) / step_num
 
     @ti.func
     def rotation_loss_func(self, x):

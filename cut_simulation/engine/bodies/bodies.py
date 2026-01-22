@@ -8,7 +8,7 @@ from cut_simulation.utils.mesh import *
 from cut_simulation.configs.macros import *
 from scipy.spatial.transform import Rotation
 
-
+from cut_simulation.util.assign import *
 
 
 
@@ -340,7 +340,7 @@ class Bodies:
         """
         assert filling in ["random", "grid"], "natural filling not supported for splat."
 
-        raw_xyz = load_splat_centers_xyz(file)
+        raw_xyz, features_dc, features_extra, opacities, scales, rots = load_ply(file)
 
         # Optional outlier trimming (helps splat floaters)
         if trim_percentile is not None and trim_percentile > 0.0:

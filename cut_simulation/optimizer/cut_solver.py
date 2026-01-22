@@ -26,7 +26,7 @@ class CutSolver:
         self.horizon_action = cfg.horizon_action
         self.taichi_env = taichi_env
         self.knife = taichi_env.agent.effectors[0]
-        self.bone = taichi_env.statics[2]
+        # self.bone = taichi_env.statics[2]
 
         self.exp_name = exp_name
         self.render_gap = render_gap
@@ -42,7 +42,7 @@ class CutSolver:
         particles = np.stack([xv, yv, zv], axis=1)
         n_particle = len(particles)
         sdf = np.zeros([n_particle])
-        self.bone.check_collision(n_particle, particles, sdf)
+        # self.bone.check_collision(n_particle, particles, sdf)
         sdf_img = sdf.reshape(self.res)
         self.vis_background = np.zeros_like(sdf_img)
         self.vis_background[sdf_img > 0] = 1.0

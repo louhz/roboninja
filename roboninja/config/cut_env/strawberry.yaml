@@ -1,0 +1,12 @@
+strawberry:
+  splat_path: null
+  pos: [0.0, 0.0, 0.0]
+  scale: [1.0, 1.0, 1.0]
+  euler: [0.0, 0.0, 0.0]
+  voxelize_res: 256
+  shell_radius_vox: 2
+  close_iters: 2
+  normalize: true
+  trim_percentile: 0.5
+  cache_voxels: true
+  mesh_path: null

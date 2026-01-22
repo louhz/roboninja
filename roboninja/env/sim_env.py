@@ -10,7 +10,7 @@ class SimEnv(BaseEnv):
         self.visualizer = Visualizer()
 
     def reset(self, bone_wrd_pts, **kwargs):
-        self.bone_polygon = Polygon(bone_wrd_pts)
+        # self.bone_polygon = Polygon(bone_wrd_pts)
         self.cut_mass = 0
         self.cut_mass_array = list()
         self.collision_array = list()
@@ -25,7 +25,9 @@ class SimEnv(BaseEnv):
 
         # detect collision
         p = Point(wrd_pos[0], wrd_pos[1])
-        stop_signal = p.distance(self.bone_polygon) < 1e-9
+        # stop_signal = p.distance(self.bone_polygon) < 1e-9
+        # rewrite this stop signal to be touch the ground
+        stop_signal = False
         self.collision_array.append(stop_signal)
 
         if collision_candidates is None:
@@ -34,7 +36,8 @@ class SimEnv(BaseEnv):
             collision_results = list()
             for c in collision_candidates:
                 p = Point(c[0], c[1])
-                collision_results.append(p.distance(self.bone_polygon) < 1e-9)
+                # collision_results.append(p.distance(self.bone_polygon) < 1e-9)
+                collision_results.append(False)
             return collision_results
 
     @property
