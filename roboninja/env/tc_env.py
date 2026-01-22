@@ -138,7 +138,7 @@ def get_strawberry_env(cfg):
         voxelize_res=getattr(cfg.strawberry, "voxelize_res", 256),
 
         # forwarded into self._add_body('mesh', ..., **kwargs)
-        material=MEAT,                 # keep if indexing is correct
+        material=STRAWBERRY,                 # keep if indexing is correct
     )
     # --- Boundary (keep your original or auto-size) ---
     if getattr(cfg, "auto_boundary", False):

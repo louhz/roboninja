@@ -139,7 +139,7 @@ def backward(taichi_env, comp_actions, **kwargs):
 
 # fix the digital asset  
 
-# fix the rl policy
+# fix the rl policy : combine with our datasetrender.py, make sure the knife is able to cut through the strawberry and it can be performed by the collision check
 
 # fix  tactile
 
