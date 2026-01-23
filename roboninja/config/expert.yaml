@@ -12,6 +12,11 @@ log_wandb: True
 
 n_iters: 300
 horizon_action: 60
+
+
+# key parameter for training
+
+# add some randomnization here
 init_action_p: [-0.3, 0.215, 0.5]
 init_action_v: [0.0, 0.0, 0.0]
 

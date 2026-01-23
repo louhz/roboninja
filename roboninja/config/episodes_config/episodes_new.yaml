@@ -1,0 +1,51 @@
+# --- new fields ---
+episode_id: 0
+base_seed: 123
+
+randomize:
+  enable: true
+
+  # Table center pose range in world XY
+  table_world_xy_min: [-0.5, -0.5]
+  table_world_xy_max: [ 0.5,  0.5]
+  table_yaw_deg: [-180.0, 180.0]
+
+  # Your statement: tabletop spans [-0.5,-0.5]..[0.5,0.5] in *table local* XY
+  table_top_half_extents: [0.5, 0.5]
+  strawberry_margin: 0.03
+  strawberry_yaw_deg: [-180.0, 180.0]
+
+  # Heights (YOU must set these to match your asset)
+  table_z: 0.0
+  table_top_z: 0.75
+  strawberry_z_offset: 0.02
+
+  # Coordinate packing:
+  # - Genesis uses (x,y,z). Your expert.yaml comment says (x,z,y).
+  # Pick the one your env expects:
+  pos_order: "xyz"   # or "xzy"
+
+  # Yaw axis inside your euler triplet (0=x,1=y,2=z).
+  # Genesis yaw is z => 2. If your env uses y-up, set 1.
+  table_yaw_axis: 2
+  strawberry_yaw_axis: 2
+
+  # Keep base euler (e.g. your strawberry has [0,180,0] for mesh alignment),
+  # then overwrite just the yaw component.
+  table_base_euler: [0.0, 0.0, 0.0]
+  strawberry_base_euler: ${cut_env.strawberry.euler}
+
+cut_env:
+  # --- new table block (asset paths are placeholders) ---
+  table:
+    mesh_path: /path/to/table.obj
+    pos: [0.0, 0.0, 0.0]
+    euler: [0.0, 0.0, 0.0]
+    scale: [1.0, 1.0, 1.0]
+    fixed: true
+
+  strawberry:
+    mesh_path: /home/louhz/Desktop/Rss/roboninja/generateddata/Generated_strawberry/0001/mesh.obj
+    pos: [0.5, 0.1, 0.45]
+    scale: [0.25, 0.25, 0.25]
+    euler: [0.0, 180.0, 0.0]
