@@ -5,7 +5,7 @@ from cut_simulation.engine.agents import *
 from cut_simulation.engine.meshes import Statics
 from cut_simulation.engine.renderer import Renderer
 from cut_simulation.engine.bodies import Bodies
-from cut_simulation.engine.losses import Cuthalfloss
+from cut_simulation.engine.losses import CutLoss,Cuthalfloss
 from cut_simulation.configs.macros import *
 from cut_simulation.utils.misc import *
 
@@ -81,8 +81,7 @@ class TaichiEnv:
         self.bodies.add_body(**kwargs)
 
     def setup_loss(self, **kwargs):
-        # CHANGED: CutLoss -> Cuthalfloss
-        self.loss = Cuthalfloss(
+        self.loss = CutLoss(
             max_action_steps_global=self.horizon,
             max_steps_global=self.max_steps_global,
             **kwargs
@@ -113,8 +112,8 @@ class TaichiEnv:
         if self.loss is not None:
             self.loss.build(
                 sim=self.simulator,
-                knife=self.agent.effectors[0],
-                ground=self.statics[1]
+                knife=self.agent.effectors[0]
+                # bone=self.statics[2]
             )
 
     def reset_grad(self):

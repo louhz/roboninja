@@ -83,6 +83,87 @@ def get_cut_env(cfg):
 
 
 
+def get_strawberry_cuthalf_env(cfg):
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.cuda_id)
+    os.environ["TI_VISIBLE_DEVICE"] = str(cfg.cuda_id + get_vulkan_offset())
+
+    # This TaichiEnv must be the edited version where setup_loss() uses Cuthalfloss
+    from cut_simulation.engine.taichi_env import TaichiEnv
+
+    taichi_env = TaichiEnv(
+        quality=2,
+        particle_density=8e6,
+        max_steps_local=30 * cfg.gpu_type,
+        max_steps_global=30 * cfg.horizon + 1,
+        device_memory_GB=10 * cfg.gpu_type,
+        horizon=cfg.horizon,
+    )
+
+    taichi_env.setup_agent(cfg.knife)
+
+    taichi_env.add_static(
+        file="chopping_board.obj",
+        pos=(0.5, 0.0, 0.5),
+        euler=(0.0, 180.0, 0.0),
+        scale=(0.5, 0.5, 0.5),
+        material=CHOPPINGBOARD,
+        has_dynamics=False,
+    )
+
+    taichi_env.add_static(
+        file="support.obj",
+        sdf_res=256,
+        pos=(0.57, 0.108, 0.5),
+        euler=(90.0, 180.0, 0.0),
+        scale=(0.1, 0.1875, 0.216),
+        material=SUPPORT,
+        has_dynamics=True,
+        render_order=None,
+    )
+
+    # Strawberry body
+    taichi_env.add_body(
+        type="mesh",
+        filling="grid",
+        file=cfg.strawberry.mesh_path,  # .obj/.ply/.stl
+        pos=cfg.strawberry.pos,
+        scale=cfg.strawberry.scale,
+        voxelize_res=getattr(cfg.strawberry, "voxelize_res", 256),
+        material=STRAWBERRY,
+    )
+
+    # --- Boundary ---
+    if getattr(cfg, "auto_boundary", False):
+        st_pos = np.array(cfg.strawberry.pos, dtype=np.float32)
+        st_scale = np.array(cfg.strawberry.scale, dtype=np.float32)
+        margin = np.array([0.10, 0.10, 0.10], dtype=np.float32)
+
+        lower = np.maximum(
+            st_pos - 0.5 * st_scale - margin,
+            np.array([0.05, 0.025, 0.05], dtype=np.float32),
+        )
+        upper = np.minimum(
+            st_pos + 0.5 * st_scale + margin,
+            np.array([0.95, 0.95, 0.95], dtype=np.float32),
+        )
+
+        taichi_env.setup_boundary(type="cube", lower=tuple(lower), upper=tuple(upper))
+    else:
+        taichi_env.setup_boundary(
+            type="cube",
+            lower=(0.05, 0.025, 0.05),
+            upper=(0.95, 0.95, 0.95),
+        )
+
+    if cfg.render is not None:
+        taichi_env.setup_renderer(**cfg.render)
+
+    # This now builds Cuthalfloss internally (after your TaichiEnv change)
+    taichi_env.setup_loss(weights=cfg.loss_weight)
+
+    taichi_env.build()
+    return taichi_env
+
 def get_strawberry_env(cfg):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(cfg.cuda_id)
     os.environ['TI_VISIBLE_DEVICE'] = str(cfg.cuda_id + get_vulkan_offset())

@@ -11,6 +11,73 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
-        }
+        },
+        {
+      "name": "Train PPO Strawberry (Taichi + rsl_rl)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/roboninja/scripts/train_ppo_strawberry.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--device",
+        "cuda:0",
+        "--num_envs",
+        "1",
+        "--horizon_action",
+        "60",
+        "--max_iterations",
+        "2000",
+        "--num_steps_per_env",
+        "60",
+        "--save_interval",
+        "100",
+        "--log_dir",
+        "runs/ppo_strawberry",
+        "--reward_scale",
+        "1.0",
+        "--collision_done_threshold",
+        "-1.0",
+        "--mesh_path",
+        "/home/louhz/Desktop/Rss/roboninja/generateddata/Generated_strawberry/0001/mesh.obj"
+      ]
+    },
+
+    {
+      "name": "Train PPO Strawberry (Hydra overrides)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/roboninja/scripts/train_ppo_strawberry.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--device",
+        "cuda:0",
+        "--num_envs",
+        "1",
+        "--horizon_action",
+        "60",
+        "--max_iterations",
+        "2000",
+        "--num_steps_per_env",
+        "60",
+        "--save_interval",
+        "100",
+        "--log_dir",
+        "runs/ppo_strawberry",
+        "--reward_scale",
+        "1.0",
+        "--collision_done_threshold",
+        "-1.0",
+        "--override",
+        "strawberry.mesh_path=/home/louhz/Desktop/Rss/roboninja/generateddata/Generated_strawberry/0001/mesh.obj",
+        "--override",
+        "strawberry.pos=(0.5,0.1,0.45)",
+        "--override",
+        "strawberry.scale=(0.25,0.25,0.25)",
+        "--override",
+        "strawberry.euler=(0.0,180.0,0.0)"
+      ]
+    }
     ]
 }

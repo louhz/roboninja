@@ -1,0 +1,65 @@
+defaults:
+  - _self_
+  # IMPORTANT:
+  # If you have a strawberry env config, point to it here, e.g.:
+  # - cut_env: cut_env_strawberry
+  # Otherwise keep cut_env: cut_env and ensure that config contains strawberry fields.
+  - cut_env: cut_env
+
+name: expert
+render_gap: 10 # -1 means no render
+log_wandb: True
+
+n_iters: 300
+horizon_action: 60
+init_action_p: [-0.3, 0.215, 0.5]
+init_action_v: [0.0, 0.0, 0.0]
+
+logging:
+  project: roboninja
+  name: ${name}
+  tags: ["${cut_env.bone.name}"]
+
+optim:
+  type: Adam
+  bounds: [-1.0, 1.0]
+
+  lr_action_p: 5e-2
+  lr_action_v: 1e-2
+
+  # Adam specific
+  beta_1: 0.9
+  beta_2: 0.99
+  epsilon: 1e-8
+
+  # Momentum specific
+  momentum: 0.9
+
+save_info_keys: ["iter", "comp_actions", "loss"]
+
+# --- Strawberry/CutHalf env overrides (moved from python into yaml) ---
+# If your cut_env default already includes these, you can delete this block.
+cut_env:
+  auto_boundary: True
+
+  bone:
+    name: bone_0
+
+  strawberry:
+    mesh_path: /home/louhz/Desktop/Rss/roboninja/generateddata/Generated_strawberry/0001/mesh.obj
+    pos: [0.5, 0.1, 0.45]     # (x,z,y) in your comment
+    scale: [0.25, 0.25, 0.25]
+
+    voxelize_res: 256
+    shell_radius_vox: 2
+    close_iters: 2
+    normalize: True
+    trim_percentile: 0.5
+    cache_voxels: True
+    euler: [0.0, 180.0, 0.0]
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/optimization/${name}
