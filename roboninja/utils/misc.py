@@ -7,21 +7,25 @@ import dominate
 import imageio
 import numpy as np
 import ray
-from moviepy.editor import ImageSequenceClip
+import socket
+from moviepy import ImageSequenceClip
 
 
 def get_vulkan_offset():
     hostname = socket.gethostname()
-    if hostname == 'crv03':
-        return 1
-    else:
-        return 0
+    return 1 if hostname == "crv03" else 0
 
-def animate(imgs, filename='animation.mp4', _return=True, fps=10):
+
+def animate(imgs, filename="animation.mp4", _return=True, fps=10):
+    # keep your old dict behavior
     if isinstance(imgs, dict):
-        imgs = imgs['image']
-    imgs = ImageSequenceClip(imgs, fps=fps)
-    imgs.write_videofile(filename, fps=fps, logger=None)
+        imgs = imgs["image"]
+
+    clip = ImageSequenceClip(imgs, fps=fps)
+
+    # MoviePy 2.x: logger can be None to silence output
+    clip.write_videofile(filename, fps=fps, logger=None)
+
     if _return:
         from IPython.display import Video
         return Video(filename, embed=False)

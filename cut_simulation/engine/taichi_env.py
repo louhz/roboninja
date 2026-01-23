@@ -27,7 +27,7 @@ class TaichiEnv:
             ckpt_dest='cpu',
             gravity=(0.0, -10.0, 0.0),
         ):
-        ti.init(arch=ti.cuda, device_memory_GB=device_memory_GB, packed=True)
+        ti.init(arch=ti.cuda, device_memory_GB=device_memory_GB)
 
         self.particle_density = particle_density
         self.dim = dim

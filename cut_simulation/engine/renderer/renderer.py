@@ -93,49 +93,63 @@ class Renderer:
 
 
     def update_camera(self, t=None, rotate=False):
-        self.camera.track_user_inputs(self.window, movement_speed=0.03, hold_key=ti.ui.RMB)
+        # ---- IMPORTANT: In Taichi 2.7.1 you cannot query cursor/key events
+        # when show_window=False (offscreen/headless). So guard all input code.
+        if self.show_window:
+            # Mouse + WASD style camera control (requires visible window)
+            self.camera.track_user_inputs(
+                self.window, movement_speed=0.03, hold_key=ti.ui.RMB
+            )
 
-        speed = 1e-2
-        if self.window.is_pressed(ti.ui.UP):
-            camera_dir = np.array(self.camera.curr_lookat - self.camera.curr_position)
-            camera_dir[1] = 0
-            camera_dir /= np.linalg.norm(camera_dir)
-            new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
-            new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
-            self.camera.position(*new_camera_pos)
-            self.camera.lookat(*new_camera_lookat)
-        elif self.window.is_pressed(ti.ui.DOWN):
-            camera_dir = np.array(self.camera.curr_lookat - self.camera.curr_position)
-            camera_dir[1] = 0
-            camera_dir /= np.linalg.norm(camera_dir)
-            new_camera_pos = np.array(self.camera.curr_position) - camera_dir * speed
-            new_camera_lookat = np.array(self.camera.curr_lookat) - camera_dir * speed
-            self.camera.position(*new_camera_pos)
-            self.camera.lookat(*new_camera_lookat)
-        elif self.window.is_pressed('u'):
-            camera_dir = np.array([0, 1, 0])
-            new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
-            new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
-            self.camera.position(*new_camera_pos)
-            self.camera.lookat(*new_camera_lookat)
-        elif self.window.is_pressed('i'):
-            camera_dir = np.array([0, -1, 0])
-            new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
-            new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
-            self.camera.position(*new_camera_pos)
-            self.camera.lookat(*new_camera_lookat)
+            # Extra key controls (also only valid when show_window=True)
+            speed = 1e-2
 
-        # rotate
-        if rotate and t is not None:
+            if self.window.is_pressed(ti.ui.UP) or self.window.is_pressed('w'):
+                camera_dir = np.array(self.camera.curr_lookat - self.camera.curr_position)
+                camera_dir[1] = 0
+                n = np.linalg.norm(camera_dir) + 1e-12
+                camera_dir /= n
+                new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
+                new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
+                self.camera.position(*new_camera_pos)
+                self.camera.lookat(*new_camera_lookat)
+
+            elif self.window.is_pressed(ti.ui.DOWN) or self.window.is_pressed('s'):
+                camera_dir = np.array(self.camera.curr_lookat - self.camera.curr_position)
+                camera_dir[1] = 0
+                n = np.linalg.norm(camera_dir) + 1e-12
+                camera_dir /= n
+                new_camera_pos = np.array(self.camera.curr_position) - camera_dir * speed
+                new_camera_lookat = np.array(self.camera.curr_lookat) - camera_dir * speed
+                self.camera.position(*new_camera_pos)
+                self.camera.lookat(*new_camera_lookat)
+
+            elif self.window.is_pressed('u'):
+                camera_dir = np.array([0, 1, 0])
+                new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
+                new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
+                self.camera.position(*new_camera_pos)
+                self.camera.lookat(*new_camera_lookat)
+
+            elif self.window.is_pressed('i'):
+                camera_dir = np.array([0, -1, 0])
+                new_camera_pos = np.array(self.camera.curr_position) + camera_dir * speed
+                new_camera_lookat = np.array(self.camera.curr_lookat) + camera_dir * speed
+                self.camera.position(*new_camera_pos)
+                self.camera.lookat(*new_camera_lookat)
+
+        # ---- scripted rotation works in BOTH modes (human/offscreen)
+        if rotate and (t is not None):
             speed = 7.5e-4
             xz_radius = np.linalg.norm([self.camera_vec[0], self.camera_vec[2]])
             rad = speed * np.pi * t + self.camera_init_xz_rad
             x = xz_radius * np.sin(rad)
             z = xz_radius * np.cos(rad)
             new_camera_pos = np.array([
-                    x + self.camera_lookat[0],
-                    self.camera_pos[1],
-                    z + self.camera_lookat[2]]) 
+                x + self.camera_lookat[0],
+                self.camera_pos[1],
+                z + self.camera_lookat[2],
+            ])
             self.camera.position(*new_camera_pos)
 
         self.scene.set_camera(self.camera)

@@ -138,8 +138,7 @@ USE_BASELINE_RELATIVE_TO_CURRENT_EE = True
 
 # Export a collision-safe version back to Taichi sim:
 EXPORT_TAICHI_ACTIONS = True
-TAICHI_ACTIONS_OUT_TXT = OUT_DIR / "knife_actions_out.txt"
-TAICHI_WAYPOINTS_OUT_TXT = OUT_DIR / "knife_waypoints_out.txt"
+
 
 # Taichi expects horizon_action=60 in your script, so default to that if no baseline file is loaded.
 EXPORT_TAICHI_HORIZON = 60
@@ -154,6 +153,10 @@ OBJECT_MJCF_PATH = "./fruit_asset/fruit.xml"   # optional, can be missing
 
 OUT_DIR = Path("./rl_out_cut_to_ground")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+TAICHI_ACTIONS_OUT_TXT = OUT_DIR / "knife_actions_out.txt"
+TAICHI_WAYPOINTS_OUT_TXT = OUT_DIR / "knife_waypoints_out.txt"
+
 
 DT_CMD = 0.01
 N_STEPS = 200  # 200 * 0.01 = 2 seconds

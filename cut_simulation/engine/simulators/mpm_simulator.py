@@ -29,7 +29,7 @@ class MPMSimulator:
         self.n_substeps       = int(2e-3 / self.dt)
         assert self.n_substeps * self.horizon < self.max_steps_global
         assert self.max_steps_local % self.n_substeps == 0
-
+        
         self.boundary      = None
         self.has_particles = False
 
@@ -61,6 +61,8 @@ class MPMSimulator:
 
         # agent
         self.agent = agent
+        self.has_agent = agent is not None
+        self.has_statics = len(statics) > 0     
 
         # misc
         self.cur_step_global = 0
@@ -120,7 +122,7 @@ class MPMSimulator:
             self.C_np    = np.zeros((self.n_particles, self.dim, self.dim), dtype=DTYPE_NP)
             self.F_np    = np.zeros((self.n_particles, self.dim, self.dim), dtype=DTYPE_NP)
             self.used_np = np.zeros((self.n_particles,), dtype=np.int32)
-        elif self.ckpt_dest == 'cpu' or 'gpu':
+        elif self.ckpt_dest in ['cpu', 'gpu']:
             self.ckpt_ram = dict()
         self.actions_buffer = []
         self.setup_ckpt_dir()
@@ -222,8 +224,15 @@ class MPMSimulator:
     @ti.kernel
     def reset_grid_and_grad(self, f: ti.i32):
         for I in ti.grouped(ti.ndrange(*self.res)):
-            self.grid[f, I].fill(0)
-            self.grid.grad[f, I].fill(0)
+            # zero primal
+            self.grid[f, I].v_in  = ti.Vector.zero(DTYPE_TI, self.dim)
+            self.grid[f, I].mass  = ti.cast(0.0, DTYPE_TI)
+            self.grid[f, I].v_out = ti.Vector.zero(DTYPE_TI, self.dim)
+
+            # zero grads (only exists because grid needs_grad=True)
+            self.grid.grad[f, I].v_in  = ti.Vector.zero(DTYPE_TI, self.dim)
+            self.grid.grad[f, I].mass  = ti.cast(0.0, DTYPE_TI)
+            self.grid.grad[f, I].v_out = ti.Vector.zero(DTYPE_TI, self.dim) 
 
     def global_step_to_local(self, step_global):
         step_local = step_global % self.max_steps_local
@@ -361,68 +370,80 @@ class MPMSimulator:
                 self.particles[f+1, p].F = F_new
 
     @ti.kernel
-    def grid_op(self, f: ti.i32, f_global: ti.i32):
+    def grid_op(self, f: ti.i32, f_global: ti.i32,
+                has_agent: ti.template(), has_statics: ti.template()):
         for I in ti.grouped(ti.ndrange(*self.res)):
-            if self.grid[f, I].mass > 1e-12:  # No need for epsilon here, 1e-10 is to prevent potential numerical problems ..
-                v_out = (1 / self.grid[f, I].mass) * self.grid[f, I].v_in  # Momentum to velocity
-                v_out += self.dt * self.gravity # gravity
+            if self.grid[f, I].mass > 1e-12:
+                v_out = (1 / self.grid[f, I].mass) * self.grid[f, I].v_in
+                v_out += self.dt * self.gravity
 
                 # collide with statics
-                if ti.static(self.n_statics>0):
+                if ti.static(has_statics):
                     for i in ti.static(range(self.n_statics)):
-                        v_out = self.statics[i].collide(I*self.dx, v_out)
+                        v_out = self.statics[i].collide(I * self.dx, v_out)
 
                 # collide with agent
-                if ti.static(self.agent is not None):
+                if ti.static(has_agent):
                     if ti.static(self.agent.collide_type in ['grid', 'both']):
-                        v_out = self.agent.collide(f, I*self.dx, v_out, self.dt, self.grid[f, I].mass, f_global)
-                        # v_out = self.agent.collide(f, I*self.dx, v_out, self.dt, self.grid[f, I].mass, self.cur_step_global)
+                        v_out = self.agent.collide(
+                            f, I * self.dx, v_out, self.dt, self.grid[f, I].mass, f_global
+                        )
 
                 bound = 3
                 eps = ti.cast(1e-30, DTYPE_TI)
+
                 for d in ti.static(range(self.dim)):
                     if I[d] < bound and v_out[d] < 0:
                         if ti.static(d != 1 or self.ground_friction == 0):
-                            v_out[d] = 0  # Boundary conditions
+                            v_out[d] = 0
                         else:
                             if ti.static(self.ground_friction < 10):
-                                # TODO: 1e-30 problems ...
                                 normal = ti.Vector.zero(DTYPE_TI, self.dim)
-                                normal[d] = 1.
+                                normal[d] = 1.0
                                 lin = v_out.dot(normal) + eps
                                 vit = v_out - lin * normal - I * eps
                                 lit = self.norm(vit)
-                                v_out = ti.max(1. + ti.static(self.ground_friction) * lin / lit, 0.) * (vit + I * eps)
+                                v_out = ti.max(
+                                    1.0 + ti.static(self.ground_friction) * lin / lit, 0.0
+                                ) * (vit + I * eps)
                             else:
                                 v_out = ti.Vector.zero(DTYPE_TI, self.dim)
-                    if I[d] > self.res[d] - bound and v_out[d] > 0: v_out[d] = 0
+
+                    if I[d] > self.res[d] - bound and v_out[d] > 0:
+                        v_out[d] = 0
+
                 self.grid[f, I].v_out = v_out
 
     @ti.kernel
-    def g2p(self, f: ti.i32):
+    def g2p(self, f: ti.i32, has_agent: ti.template()):
         for p in range(self.n_particles):
             if self.particles_ng[f, p].used:
                 base = (self.particles[f, p].x * self.inv_dx - 0.5).cast(int)
-                fx = self.particles[f, p].x * self.inv_dx - base.cast(DTYPE_TI)
-                w = [0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1.0) ** 2, 0.5 * (fx - 0.5) ** 2]
+                fx   = self.particles[f, p].x * self.inv_dx - base.cast(DTYPE_TI)
+                w    = [0.5 * (1.5 - fx) ** 2,
+                        0.75 - (fx - 1.0) ** 2,
+                        0.5 * (fx - 0.5) ** 2]
+
                 new_v = ti.Vector.zero(DTYPE_TI, self.dim)
                 new_C = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+
                 for offset in ti.static(ti.grouped(self.stencil_range())):
                     dpos = offset.cast(DTYPE_TI) - fx
-                    g_v = self.grid[f, base + offset].v_out
+                    g_v  = self.grid[f, base + offset].v_out
+
                     weight = ti.cast(1.0, DTYPE_TI)
                     for d in ti.static(range(self.dim)):
                         weight *= w[offset[d]][d]
+
                     new_v += weight * g_v
                     new_C += 4 * self.inv_dx * weight * g_v.outer_product(dpos)
 
-                # collide with agent
-                if ti.static(self.agent is not None):
+                # collide with agent (compile-time guarded)
+                if ti.static(has_agent):
                     if ti.static(self.agent.collide_type in ['particle', 'both']):
                         new_x_tmp = self.particles[f, p].x + self.dt * new_v
                         new_v = self.agent.collide(f, new_x_tmp, new_v, self.dt)
 
-                # advect to next frame    
                 self.particles[f+1, p].v = new_v
                 self.particles[f+1, p].C = new_C
 
@@ -446,13 +467,27 @@ class MPMSimulator:
         self.compute_H_svd_grad(f)
         self.compute_H.grad(f)
         self.compute_COM.grad(f)
-
     @ti.kernel
     def reset_bodies_and_grad(self):
         for body_id in range(self.n_bodies):
             if self.bodies_i[body_id].mat_cls == MAT_RIGID:
-                self.bodies[body_id].fill(0)
-                self.bodies.grad[body_id].fill(0)
+                # primal
+                self.bodies[body_id].COM_t0 = ti.Vector.zero(DTYPE_TI, self.dim)
+                self.bodies[body_id].COM_t1 = ti.Vector.zero(DTYPE_TI, self.dim)
+                self.bodies[body_id].H      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies[body_id].R      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies[body_id].U      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies[body_id].S      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies[body_id].V      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+
+                # grads
+                self.bodies.grad[body_id].COM_t0 = ti.Vector.zero(DTYPE_TI, self.dim)
+                self.bodies.grad[body_id].COM_t1 = ti.Vector.zero(DTYPE_TI, self.dim)
+                self.bodies.grad[body_id].H      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies.grad[body_id].R      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies.grad[body_id].U      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies.grad[body_id].S      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+                self.bodies.grad[body_id].V      = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
 
     @ti.kernel
     def compute_COM(self, f: ti.i32):
@@ -532,16 +567,20 @@ class MPMSimulator:
         self.agent_move(f, is_none_action)
 
         if self.has_particles:
-            self.grid_op(f, self.cur_step_global)
-            self.g2p(f)
+            self.grid_op(self.cur_step_local, self.cur_step_global, self.has_agent, self.has_statics)
+            self.g2p(f, self.has_agent)
             self.advect(f)
 
 
     def substep_grad(self, f, is_none_action):
         if self.has_particles:
             self.advect_grad(f)
-            self.g2p.grad(f)
-            self.grid_op.grad(f, self.cur_step_global)
+
+            # IMPORTANT: grad() must match the forward kernel signature exactly
+            self.g2p.grad(f, self.has_agent)
+
+            # grid_op forward signature: (f, f_global, has_agent, has_statics)
+            self.grid_op.grad(f, self.cur_step_global, self.has_agent, self.has_statics)
 
         self.agent_move_grad(f, is_none_action)
 
@@ -555,6 +594,7 @@ class MPMSimulator:
         if self.has_particles:
             self.process_unused_particles.grad(f)
             self.advect_used.grad(f)
+
 
 
     # ------------------------------------ io -------------------------------------#
@@ -590,9 +630,37 @@ class MPMSimulator:
             self.particles_ng[target, i].used = self.particles_ng[source, i].used
 
     @ti.kernel
-    def copy_frame_agent(self, source: ti.i32, target: ti.i32):
-        if ti.static(self.agent is not None):
+    def copy_frame_agent(self, source: ti.i32, target: ti.i32, has_agent: ti.template()):
+        if ti.static(has_agent):
             self.agent.copy_frame(source, target)
+
+    @ti.kernel
+    def copy_grad_agent(self, source: ti.i32, target: ti.i32, has_agent: ti.template()):
+        if ti.static(has_agent):
+            self.agent.copy_grad(source, target)
+
+    @ti.kernel
+    def reset_grad_till_frame_agent(self, f: ti.i32, has_agent: ti.template()):
+        if ti.static(has_agent):
+            self.agent.reset_grad_till_frame(f)
+
+    @ti.kernel
+    def reset_grad_till_frame_particle(self, f: ti.i32):
+        for i, j in ti.ndrange(f, self.n_particles):
+            self.particles.grad[i, j].fill(0)
+
+    @ti.kernel
+    def reset_grad_till_frame_particle(self, f: ti.i32):
+        for i, j in ti.ndrange(f, self.n_particles):
+            # particle_state has: x, v, C, F, F_tmp, U, V, S
+            self.particles.grad[i, j].x     = ti.Vector.zero(DTYPE_TI, self.dim)
+            self.particles.grad[i, j].v     = ti.Vector.zero(DTYPE_TI, self.dim)
+            self.particles.grad[i, j].C     = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+            self.particles.grad[i, j].F     = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+            self.particles.grad[i, j].F_tmp = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+            self.particles.grad[i, j].U     = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+            self.particles.grad[i, j].V     = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
+            self.particles.grad[i, j].S     = ti.Matrix.zero(DTYPE_TI, self.dim, self.dim)
 
     @ti.kernel
     def copy_grad_particle(self, source: ti.i32, target: ti.i32):
@@ -602,21 +670,6 @@ class MPMSimulator:
             self.particles.grad[target, i].F = self.particles.grad[source, i].F
             self.particles.grad[target, i].C = self.particles.grad[source, i].C
             self.particles_ng[target, i].used = self.particles_ng[source, i].used
-
-    @ti.kernel
-    def copy_grad_agent(self, source: ti.i32, target: ti.i32):
-        if ti.static(self.agent is not None):
-            self.agent.copy_grad(source, target)
-
-    @ti.kernel
-    def reset_grad_till_frame_particle(self, f: ti.i32):
-        for i, j in ti.ndrange(f, self.n_particles):
-            self.particles.grad[i, j].fill(0)
-
-    @ti.kernel
-    def reset_grad_till_frame_agent(self, f: ti.i32):
-        if ti.static(self.agent is not None):
-            self.agent.reset_grad_till_frame(f)
 
     def get_state(self):
         f = self.cur_step_local
@@ -806,7 +859,7 @@ class MPMSimulator:
 
         if self.has_particles:
             self.copy_frame_particle(self.max_steps_local, 0) # restart from frame 0 in memory
-        self.copy_frame_agent(self.max_steps_local, 0)
+        self.copy_frame_agent(self.max_steps_local, 0,self.has_agent)
 
     def memory_from_cache(self):
         assert self.grad_enabled
@@ -815,9 +868,9 @@ class MPMSimulator:
             self.copy_grad_particle(0, self.max_steps_local)
             self.reset_grad_till_frame_particle(self.max_steps_local)
             
-        self.copy_frame_agent(0, self.max_steps_local)
-        self.copy_grad_agent(0, self.max_steps_local)
-        self.reset_grad_till_frame_agent(self.max_steps_local)
+        self.copy_frame_agent(0, self.max_steps_local,self.has_agent)
+        self.copy_grad_agent(0, self.max_steps_local,self.has_agent)
+        self.reset_grad_till_frame_agent(self.max_steps_local,self.has_agent)
 
         ckpt_start_step = self.cur_step_global - self.max_steps_local
         ckpt_end_step = self.cur_step_global - 1
