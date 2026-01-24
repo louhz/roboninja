@@ -328,9 +328,16 @@ if __name__ == "__main__":
     # robot 实体只包含机械臂和手（来自修改后的 scene.xml）
     robot = scene.add_entity(gs.morphs.MJCF(file=MJCF_PATH))
     
+
+    SCALE = 0.1
+
+    OFFSET = np.array([0.0, 0.5, 0.00])  
     # draw1_obj 实体是可抓取的物体（来自 object.xml）
     if Path(OBJECT_MJCF_PATH).exists():
-        draw1_obj = scene.add_entity(gs.morphs.MJCF(file=OBJECT_MJCF_PATH))
+        draw1_obj = scene.add_entity(
+            gs.morphs.MJCF(file=OBJECT_MJCF_PATH, scale=SCALE)
+        )
+        
         print(f"[Load] Added object from {OBJECT_MJCF_PATH}")
     else:
         print(f"[Warn] Object file not found, skipping: {OBJECT_MJCF_PATH}")
@@ -344,6 +351,7 @@ if __name__ == "__main__":
         GUI=False,
     )
     scene.build()
+     
 
     # ---- Resolve DoFs and set PD gains ----
     # 重要：resolve_dofs 现在只在 'robot' 实体上运行，
