@@ -82,6 +82,119 @@ def get_cut_env(cfg):
 
 
 
+def get_strawberry_cuthalf_env_tactile(cfg, tactile_sensor_cfg=None):
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.cuda_id)
+    os.environ["TI_VISIBLE_DEVICE"] = str(cfg.cuda_id + get_vulkan_offset())
+
+    # ✅ Use the tactile-enabled env (TaichiEnvtactile + MPMSimulatortactile)
+    # Adjust this import path to wherever you placed the TaichiEnvtactile class.
+    try:
+        from cut_simulation.engine.taichi_env_tactile import TaichiEnvtactile
+    except ImportError:
+        # fallback if you replaced the original file name
+        from cut_simulation.engine.taichi_env import TaichiEnvtactile
+
+    taichi_env = TaichiEnvtactile(
+        quality=2,
+        particle_density=8e6,
+        max_steps_local=30 * cfg.gpu_type,
+        max_steps_global=30 * cfg.horizon + 1,
+        device_memory_GB=10 * cfg.gpu_type,
+        horizon=cfg.horizon,
+    )
+
+    taichi_env.setup_agent(cfg.knife)
+
+    # ------------------------------------------------------------------
+    # ✅ NEW: tactile sensor setup MUST happen BEFORE taichi_env.build()
+    # Priority:
+    #   1) tactile_sensor_cfg arg (explicit)
+    #   2) cfg.tactile_sensor (if present in your hydra config)
+    # ------------------------------------------------------------------
+    if tactile_sensor_cfg is None and hasattr(cfg, "tactile_sensor") and cfg.tactile_sensor is not None:
+        tactile_sensor_cfg = cfg.tactile_sensor
+
+    if tactile_sensor_cfg is not None:
+        # convert OmegaConf -> plain dict if needed
+        try:
+            from omegaconf import OmegaConf
+            tactile_sensor_cfg = OmegaConf.to_container(tactile_sensor_cfg, resolve=True)
+        except Exception:
+            tactile_sensor_cfg = dict(tactile_sensor_cfg)
+
+        # this calls MPMSimulatortactile.setup_tactile_sensor(...) internally
+        taichi_env.setup_tactile_sensor(**tactile_sensor_cfg)
+
+    # --- Statics ---
+    taichi_env.add_static(
+        file="chopping_board.obj",
+        pos=(0.5, 0.0, 0.5),
+        euler=(0.0, 180.0, 0.0),
+        scale=(0.5, 0.5, 0.5),
+        material=CHOPPINGBOARD,
+        has_dynamics=False,
+    )
+
+    taichi_env.add_static(
+        file="support.obj",
+        sdf_res=256,
+        pos=(0.57, 0.108, 0.5),
+        euler=(90.0, 180.0, 0.0),
+        scale=(0.1, 0.1875, 0.216),
+        material=SUPPORT,
+        has_dynamics=True,
+        render_order=None,
+    )
+
+    # --- Strawberry body ---
+    taichi_env.add_body(
+        type="mesh",
+        filling="grid",
+        file=cfg.strawberry.mesh_path,
+        pos=cfg.strawberry.pos,
+        scale=cfg.strawberry.scale,
+        voxelize_res=getattr(cfg.strawberry, "voxelize_res", 256),
+        material=STRAWBERRY,
+    )
+
+    # --- Boundary ---
+    if getattr(cfg, "auto_boundary", False):
+        st_pos = np.array(cfg.strawberry.pos, dtype=np.float32)
+        st_scale = np.array(cfg.strawberry.scale, dtype=np.float32)
+        margin = np.array([0.10, 0.10, 0.10], dtype=np.float32)
+
+        lower = np.maximum(
+            st_pos - 0.5 * st_scale - margin,
+            np.array([0.05, 0.025, 0.05], dtype=np.float32),
+        )
+        upper = np.minimum(
+            st_pos + 0.5 * st_scale + margin,
+            np.array([0.95, 0.95, 0.95], dtype=np.float32),
+        )
+
+        taichi_env.setup_boundary(type="cube", lower=tuple(lower), upper=tuple(upper))
+    else:
+        taichi_env.setup_boundary(
+            type="cube",
+            lower=(0.05, 0.025, 0.05),
+            upper=(0.95, 0.95, 0.95),
+        )
+
+    if cfg.render is not None:
+        taichi_env.setup_renderer(**cfg.render)
+
+    # loss stays the same (your tactile env uses Cuthalfloss too)
+    taichi_env.setup_loss(weights=cfg.loss_weight)
+
+    # ✅ build allocates tactile fields (because tactile sensor was configured above)
+    taichi_env.build()
+
+    # Optional quick sanity:
+    if hasattr(taichi_env, "has_tactile_sensor"):
+        print("[env] has_tactile_sensor =", taichi_env.has_tactile_sensor)
+
+    return taichi_env
+
 
 def get_strawberry_cuthalf_env(cfg):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.cuda_id)
