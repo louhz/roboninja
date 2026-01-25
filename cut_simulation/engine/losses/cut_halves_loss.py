@@ -54,16 +54,6 @@ class Cuthalfloss:
 
 
 
-    # def build(self, sim:MPMSimulator, knife:Rigid, bone: Static):
-    #     self.sim = sim
-    #     self.knife = knife
-    #     self.bone = bone
-
-    #     self.cut_weight[None] = self.weights['cut']
-    #     self.collision_weight[None] = self.weights['collision']
-    #     self.rotation_weight[None] = self.weights['rotation']
-    #     self.move_weight[None] = self.weights['move']
-    #     self.work_weight[None] = self.weights['work']
 
 
     
