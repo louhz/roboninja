@@ -1,0 +1,54 @@
+# Dataset root that contains episodes_1, episodes_2, ...
+parent: /home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real
+
+# Same options as CLI (global defaults)
+normalize: center           # none | center | bbox
+axis_order: [0, 1, 2]
+axis_signs: [1, 1, 1]
+mesh_subdir: mesh
+backup: true
+dry_run: false
+report_csv: /home/louhz/Desktop/Rss/roboninja/example_dataset/mesh_report.csv
+
+# Per-episode lists (1-based episode id -> 0-based list index)
+scales: 
+  - [1, 1, 1]  # IT IS ACTUALLY 0.05 TO 0.1 I ALREADY DID IT MANUALLY
+  - [0.5, 0.5, 0.5]  
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  - [0.5, 0.5, 0.5]
+  
+offsets:
+  - [0.31, -0.41, 0.39]     # for episodes_1
+  - [0.38, -0.4, 0.39]     # for episodes_2
+  - [0.41, -0.44, 0.39]      # for episodes_3
+  - [0.62, -0.45, 0.39]       # for episodes_4
+  - [0.62, -0.45, 0.39]          # for episodes_5
+  - [0.62, -0.45, 0.39]        # for episodes_6
+  - [0.78, -0.58, 0.39]     # for episodes_7
+  - [0.74, -0.62, 0.39]     # for episodes_8
+  - [0.69, -0.65, 0.39]     # for episodes_9
+  - [0.82, -0.57, 0.39]    # for episodes_10
+  - [0.90, -0.48, 0.39]     # for episodes_11
+  - [0.70, -0.52, 0.39]   # for episodes_12
+  - [0.68, -0.4, 0.39]       # for episodes_13
+  - [0.75, -0.48, 0.39]     # for episodes_14
+  - [0.84, -0.28, 0.39]     # for episodes_15
+  - [0.79, -0.25, 0.39]     # for episodes_16
+  - [0.72, -0.32, 0.39]     # for episodes_17
+  - [0.7, -0.48, 0.39]      # for episodes_18
+  - [0.65, -0.37, 0.39]     # for episodes_19

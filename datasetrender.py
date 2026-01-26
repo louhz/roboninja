@@ -300,10 +300,10 @@ OBJECT_MJCF_PATH = "./fruit_asset/fruit.xml"
 # --- END MODIFIED ---
 
 
-nova2_path = "./data/strawberry_control_data/strawberry3/nova2.txt"
-nova5_path = "./data/strawberry_control_data/strawberry3/nova5.txt"
-left_path  = "./data/strawberry_control_data/strawberry3/left.txt"
-right_path = "./data/strawberry_control_data/strawberry3/right.txt"
+nova2_path = "./example_dataset/strawberry_real/episodes_19/control/nova2.txt"
+nova5_path = "./example_dataset/strawberry_real/episodes_19/control/nova5.txt"
+left_path  = "./example_dataset/strawberry_real/episodes_19/control/left.txt"
+right_path = "./example_dataset/strawberry_real/episodes_19/control/right.txt"
 video_out  = Path("renders") / "draw_strawberry.mp4"
 
 if __name__ == "__main__":

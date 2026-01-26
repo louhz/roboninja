@@ -1,163 +1,194 @@
-# train_rh_pointcloud_chunk_wandb.py
+# train_pointcloud_action_wandb.py
 import os
+import re
+import sys
 import time
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.utils.data import DataLoader
 import wandb
 
-from learning.model.dataloader import (
-    PointCloudTactileActionEpisodeDataset,
-    collate_pointcloud_to_action_chunk,
-)
+# ---------------------------------------------------------------------
+# Path setup (keep your old pattern)
+# ---------------------------------------------------------------------
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(THIS_DIR)
+sys.path.insert(0, PARENT_DIR)
 
-from learning.model.model import (
-    FourierFeatures,
-    MultiModalPolicy,
-    MultiHeadLoss,
-    MultiHeadLossConfig,
-    infer_head_dims_from_action,
-    split_action_vector,
-)
-
-# -------------------------
-# Small helpers (robust to key names / nesting)
-# -------------------------
-def pick_first_present(d, keys):
-    for k in keys:
-        if isinstance(d, dict) and k in d:
-            return d[k]
-    raise KeyError(
-        f"None of these keys found: {keys}. "
-        f"Available keys: {list(d.keys()) if isinstance(d, dict) else type(d)}"
+# ---------------------------------------------------------------------
+# Imports: dataloader + model
+# ---------------------------------------------------------------------
+try:
+    from model.dataloader import (
+        PointCloudActionEpisodeDataset,
+        EXPECTED_DIMS_ALL,
+    )
+except Exception:
+    from dataloader import (
+        PointCloudActionEpisodeDataset,
+        EXPECTED_DIMS_ALL,
     )
 
-def get_obs_dict(batch):
-    return batch.get("obs", batch) if isinstance(batch, dict) else batch
+try:
+    from model.model_raw import (
+        FourierFeatures,
+        MultiModalPolicy,
+        MultiHeadLoss,
+        MultiHeadLossConfig,
+    )
+except Exception:
+    from model_raw import (
+        FourierFeatures,
+        MultiModalPolicy,
+        MultiHeadLoss,
+        MultiHeadLossConfig,
+    )
 
-def get_action_chunk(batch):
-    # our collate returns "actions" (dict)
-    return pick_first_present(batch, ["action_chunk", "action_seq", "actions", "action", "act"])
 
-def get_point_cloud(obs):
-    return pick_first_present(obs, ["point_cloud", "pc", "points", "cloud"])
+# ---------------------------------------------------------------------
+# Utilities (unchanged)
+# ---------------------------------------------------------------------
+def seed_everything(seed: int):
+    import random
+    import numpy as np
 
-def get_joint(obs, B, device):
-    # Episode dataset has no joints -> dummy.
-    for k in ["joint", "joints", "joint_angles", "qpos", "hand_qpos"]:
-        if isinstance(obs, dict) and k in obs:
-            return obs[k]
-    return torch.zeros(B, 1, device=device)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-def get_tactile(obs):
-    if not isinstance(obs, dict):
-        return None
-    for k in ["tactile", "tactile_state", "taxel", "touch"]:
-        if k in obs:
-            return obs[k]
-    return None
 
-def get_action_mask(batch):
-    if not isinstance(batch, dict):
-        return None
-    for k in ["action_mask", "mask", "valid_mask", "seq_mask"]:
-        if k in batch:
-            return batch[k]
-    return None
-
-def normalize_head_weights(head_names: List[str], cfg_weights: Tuple[float, ...]) -> Tuple[float, ...]:
-    """
-    Make cfg.head_weights match len(head_names).
-    - If cfg_weights has length 1: broadcast
-    - If too short: pad with last weight
-    - If too long: truncate
-    """
-    if cfg_weights is None or len(cfg_weights) == 0:
-        return tuple([1.0] * len(head_names))
-    if len(cfg_weights) == 1 and len(head_names) > 1:
-        return tuple([float(cfg_weights[0])] * len(head_names))
-    if len(cfg_weights) < len(head_names):
-        pad = [float(cfg_weights[-1])] * (len(head_names) - len(cfg_weights))
-        return tuple(list(map(float, cfg_weights)) + pad)
-    if len(cfg_weights) > len(head_names):
-        return tuple(map(float, cfg_weights[: len(head_names)]))
-    return tuple(map(float, cfg_weights))
-
-def preprocess_tactile(tactile: Optional[torch.Tensor], mode: str) -> Optional[torch.Tensor]:
-    """
-    Collate returns tactile as:
-      tactile: [B, T, C, P]  (C=5, P=96 by default)
-    Most models want:
-      [B, D] or [B, T, D], so we flatten C*P.
-
-    mode:
-      - "first": use tactile[:,0] -> [B, D]
-      - "last":  use tactile[:,-1] -> [B, D]
-      - "mean":  mean over time -> [B, D]
-      - "sequence": keep [B, T, D]
-    """
-    if tactile is None:
-        return None
-
-    if tactile.dim() == 4:
-        # [B,T,C,P] -> [B,T,C*P]
-        tactile = tactile.flatten(2)
-    elif tactile.dim() == 3:
-        # already [B,T,D]
-        pass
-    elif tactile.dim() == 2:
-        # already [B,D]
-        pass
+def normalize_weights_to_4(
+    weights: Tuple[float, ...],
+    *,
+    head_names: Sequence[str],
+    active_groups: Optional[Sequence[str]] = None,
+) -> Tuple[float, float, float, float]:
+    if weights is None or len(weights) == 0:
+        w = [1.0, 1.0, 1.0, 1.0]
+    elif len(weights) == 1:
+        w = [float(weights[0])] * 4
+    elif len(weights) < 4:
+        w = list(map(float, weights)) + [float(weights[-1])] * (4 - len(weights))
     else:
-        raise ValueError(f"Unexpected tactile shape: {tuple(tactile.shape)}")
+        w = list(map(float, weights[:4]))
 
-    if mode == "sequence":
-        return tactile  # [B,T,D] (or [B,D] if it came that way)
-    if tactile.dim() == 2:
-        return tactile  # already [B,D]
+    if active_groups is not None:
+        active = set(active_groups)
+        for i, hn in enumerate(head_names):
+            if hn not in active:
+                w[i] = 0.0
 
-    # tactile is [B,T,D]
-    if mode == "first":
-        return tactile[:, 0]
-    if mode == "last":
-        return tactile[:, -1]
-    if mode == "mean":
-        return tactile.mean(dim=1)
-    raise ValueError("tactile_mode must be one of {'first','last','mean','sequence'}")
+    return (w[0], w[1], w[2], w[3])
 
 
-# -------------------------
-# Config
-# -------------------------
+def pad_stack_pointcloud_if_needed(
+    pc: Union[torch.Tensor, List[torch.Tensor]],
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    if isinstance(pc, torch.Tensor):
+        return pc, None
+
+    if not isinstance(pc, list) or len(pc) == 0:
+        raise ValueError("point_cloud must be a Tensor or a non-empty list of Tensors")
+
+    if not all(isinstance(x, torch.Tensor) and x.dim() == 2 for x in pc):
+        raise ValueError("point_cloud list must contain only 2D tensors [Ni,F]")
+
+    B = len(pc)
+    F = int(pc[0].shape[-1])
+    Nmax = max(int(x.shape[0]) for x in pc)
+
+    pc_out = torch.zeros((B, Nmax, F), dtype=pc[0].dtype)
+    mask = torch.zeros((B, Nmax), dtype=torch.bool)
+    for i, x in enumerate(pc):
+        n = int(x.shape[0])
+        pc_out[i, :n] = x
+        mask[i, :n] = True
+
+    return pc_out, mask
+
+
+def save_ckpt(path: str, model, opt, step: int, meta: Dict[str, Any]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {"step": step, "model": model.state_dict(), "opt": opt.state_dict(), "meta": meta},
+        path,
+    )
+
+
+def try_load_latest_ckpt(save_dir: str, model, opt) -> int:
+    if not os.path.isdir(save_dir):
+        return 0
+
+    candidates = []
+    for fn in os.listdir(save_dir):
+        m = re.match(r"ckpt_step_(\d+)\.pt$", fn)
+        if m:
+            candidates.append((int(m.group(1)), os.path.join(save_dir, fn)))
+
+    if not candidates:
+        return 0
+
+    candidates.sort(key=lambda x: x[0])
+    step, path = candidates[-1]
+
+    data = torch.load(path, map_location="cpu")
+    model.load_state_dict(data["model"])
+    opt.load_state_dict(data["opt"])
+    return int(data.get("step", step))
+
+
+# ---------------------------------------------------------------------
+# Config (UPDATED FOR NEW DATASET)
+# ---------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    # data
-    obs_root: str = "path/to/obs_root"
-    tactile_root: str = "path/to/tactile_root"     # ✅ NEW
-    act_root: str = "path/to/act_root"
+    # NEW DATASET ROOT (contains episodes_1 ... episodes_20)
+    base_path: str = "./example_dataset/strawberry_real"
 
-    # episode file names (your desired format)
-    pc_name: str = "point.ply"
-    tactile_name: str = "tactile.logs"
+    # NEW LAYOUT
+    mesh_subdir: str = "mesh"
+    mesh_name: str = "strawberry.stl"
+    control_subdir: str = "control"
 
-    # tactile shape (default matches your logging: 5 channels x 96 points)
-    tactile_channels: int = 5
-    tactile_points: int = 96
-    tactile_mode: str = "first"   # ✅ recommended for compatibility: "first" / "sequence"
+    # mesh->point conversion knobs (only used when reading .stl)
+    mesh_sampling: str = "surface"   # "surface" | "vertices"
+    mesh_points: int = 8192
 
-    # action heads to train
-    groups: Tuple[str, ...] = ("rh",)   # ✅ right-hand only (set to ("n2","n5","lh","rh") if you want all)
-
-    num_points: int = 4096
+    # point cloud shaping
+    num_points: Optional[int] = 4096
+    sampling: str = "random"  # "random" or "first"
     features: Tuple[str, ...] = ("xyz",)
-    batch_size: int = 32
+
+    # cache
+    cache_point_cloud: bool = True
+    pc_cache_max_items: int = 0
+
+    # action heads
+    head_names: Tuple[str, str, str, str] = ("n2", "n5", "lh", "rh")
+    groups: Tuple[str, ...] = ("n2", "n5", "lh", "rh")
+    missing_policy: str = "initial"
+
+    # action resampling (fixed length per episode)
+    action_len: int = 64
+    interp_mode_map: Optional[Dict[str, str]] = None
+    action_format: str = "dict"  # keep "dict" for this script
+
+    # loader
+    batch_size: int = 8
     num_workers: int = 8
     shuffle: bool = True
+    drop_last: bool = True
+    persistent_workers: bool = True
+    pin_memory: bool = True
+    prefetch_factor: int = 2
 
-    # chunking
-    chunk_len: int = 64
+    # model dims
+    joint_dim: int = 1  # dummy zeros
+    latent_dim: int = 512
+    trunk_dropout: float = 0.1
 
     # optimization
     lr: float = 3e-4
@@ -169,10 +200,10 @@ class TrainConfig:
 
     # loss
     loss_type: str = "mse"
-    head_weights: Tuple[float, ...] = (1.0,)  # ✅ match groups; broadcast/pad/truncate handled
+    head_weights: Tuple[float, ...] = (1.0,)
 
     # wandb
-    wandb_project: str = "rh-pointcloud-chunk"
+    wandb_project: str = "pointcloud-action"
     wandb_run_name: Optional[str] = None
     wandb_entity: Optional[str] = None
     wandb_group: Optional[str] = None
@@ -185,214 +216,310 @@ class TrainConfig:
     save_dir: str = "./checkpoints"
 
 
-def seed_everything(seed: int):
-    import random
-    import numpy as np
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-# -------------------------
-# Build model + infer heads (from one batch)
-# -------------------------
+# ---------------------------------------------------------------------
+# Build model + loss from first batch (unchanged)
+# ---------------------------------------------------------------------
 @torch.no_grad()
-def infer_heads_from_batch(action_chunk: Any):
-    """
-    Returns (head_names, head_dims_step, T_in_batch).
-    """
-    if isinstance(action_chunk, dict):
-        sample_action = {}
-        for k, v in action_chunk.items():
-            if v.dim() == 3:
-                sample_action[k] = v[0, 0]
-            elif v.dim() == 2:
-                sample_action[k] = v[0]
-            else:
-                raise ValueError(f"Unexpected action dict tensor shape for key={k}: {v.shape}")
-        head_names, head_dims_step = infer_head_dims_from_action(sample_action)
-        any_v = next(iter(action_chunk.values()))
-        T = any_v.shape[1] if any_v.dim() == 3 else 1
-        return head_names, head_dims_step, T
+def build_model_and_loss(cfg: TrainConfig, first_batch: Dict[str, Any], device: torch.device):
+    if len(cfg.head_names) != 4:
+        raise ValueError(f"head_names must be length 4, got {cfg.head_names}")
+    if cfg.features[0].lower() != "xyz":
+        raise ValueError(f"cfg.features must start with 'xyz'. Got {cfg.features}")
+    for g in cfg.groups:
+        if g not in cfg.head_names:
+            raise ValueError(f"cfg.groups contains '{g}' not in cfg.head_names={cfg.head_names}")
 
-    # tensor action
-    if action_chunk.dim() == 3:
-        T = action_chunk.shape[1]
-        sample_step = action_chunk[0, 0]
-    elif action_chunk.dim() == 2:
-        T = 1
-        sample_step = action_chunk[0]
-    else:
-        raise ValueError(f"Unexpected action_chunk shape: {action_chunk.shape}")
+    pc_raw = first_batch["point_cloud"]
+    pc, _ = pad_stack_pointcloud_if_needed(pc_raw)
+    point_dim = int(pc.shape[-1])
 
-    head_names, head_dims_step = infer_head_dims_from_action(sample_step)
-    return head_names, head_dims_step, T
+    if "actions" not in first_batch or not isinstance(first_batch["actions"], dict):
+        raise KeyError(
+            "This training script expects batch['actions'] as a dict (action_format='dict'). "
+            "Set cfg.action_format='dict' in the dataset."
+        )
+    actions: Dict[str, torch.Tensor] = first_batch["actions"]
 
+    head_dims_step: List[int] = []
+    for hn in cfg.head_names:
+        if hn in actions:
+            head_dims_step.append(int(actions[hn].shape[-1]))  # [B,T,D]
+        elif hn in EXPECTED_DIMS_ALL:
+            head_dims_step.append(int(EXPECTED_DIMS_ALL[hn]))
+        else:
+            raise ValueError(f"Cannot infer dim for head '{hn}'")
 
-def build_model_from_batch(cfg: TrainConfig, batch: Dict[str, Any], device: torch.device):
-    obs = get_obs_dict(batch)
+    T = int(cfg.action_len)
+    head_dims_flat = [d * T for d in head_dims_step]
 
-    pc = get_point_cloud(obs).to(device)
-    B = pc.shape[0]
-
-    joint = get_joint(obs, B=B, device=device).to(device)
-
-    tactile = get_tactile(obs)
-    tactile = tactile.to(device) if tactile is not None else None
-    tactile = preprocess_tactile(tactile, mode=cfg.tactile_mode)
-    tactile_dim = 0 if tactile is None else tactile.shape[-1]
-
-    action_chunk = get_action_chunk(batch)
-    action_chunk = {k: v.to(device) for k, v in action_chunk.items()} if isinstance(action_chunk, dict) else action_chunk.to(device)
-
-    head_names, head_dims_step, T = infer_heads_from_batch(action_chunk)
-
-    # ✅ no more “must be 4 heads”
-    if T not in (1, cfg.chunk_len):
-        raise ValueError(f"Expected T==chunk_len or 1, got T={T}")
-
-    point_dim = pc.shape[-1]
-    joint_dim = joint.shape[-1]
-
-    # Positional encodings
-    joint_pe = FourierFeatures(joint_dim, num_bands=6, max_freq=20.0)
+    joint_pe = FourierFeatures(cfg.joint_dim, num_bands=6, max_freq=20.0)
     point_pe = FourierFeatures(3, num_bands=6, max_freq=10.0)
-    tactile_pe = FourierFeatures(tactile_dim, num_bands=4, max_freq=10.0) if tactile_dim > 0 else None
 
-    head_dims_chunk = [d * cfg.chunk_len for d in head_dims_step]
+    try:
+        model = MultiModalPolicy(
+            joint_dim=int(cfg.joint_dim),
+            point_dim=point_dim,
+            latent_dim=int(cfg.latent_dim),
+            joint_pe=joint_pe,
+            point_xyz_pe=point_pe,
+            trunk_dropout=float(cfg.trunk_dropout),
+            head_dims=head_dims_flat,
+            head_names=list(cfg.head_names),
+            ignore_joint=True,
+        ).to(device)
+    except TypeError:
+        model = MultiModalPolicy(
+            joint_dim=int(cfg.joint_dim),
+            point_dim=point_dim,
+            latent_dim=int(cfg.latent_dim),
+            joint_pe=joint_pe,
+            point_xyz_pe=point_pe,
+            trunk_dropout=float(cfg.trunk_dropout),
+            head_dims=head_dims_flat,
+            head_names=list(cfg.head_names),
+        ).to(device)
 
-    model = MultiModalPolicy(
-        joint_dim=joint_dim,
-        point_dim=point_dim,
-        tactile_dim=tactile_dim,
-        joint_pe=joint_pe,
-        point_xyz_pe=point_pe,
-        tactile_pe=tactile_pe,
-        head_names=head_names,
-        head_dims=head_dims_chunk,
-    ).to(device)
-
-    weights = normalize_head_weights(head_names, cfg.head_weights)
-    loss_cfg = MultiHeadLossConfig(loss_type=cfg.loss_type, weights=weights)
-    loss_fn = MultiHeadLoss(head_names, loss_cfg).to(device)
+    weights_used = normalize_weights_to_4(
+        cfg.head_weights,
+        head_names=cfg.head_names,
+        active_groups=cfg.groups,
+    )
+    loss_cfg = MultiHeadLossConfig(loss_type=str(cfg.loss_type), weights=weights_used)
+    loss_fn = MultiHeadLoss(head_names=list(cfg.head_names), cfg=loss_cfg).to(device)
 
     meta = {
-        "head_names": head_names,
+        "head_names": list(cfg.head_names),
         "head_dims_step": head_dims_step,
-        "joint_dim": joint_dim,
+        "head_dims_flat": head_dims_flat,
+        "action_len": int(cfg.action_len),
         "point_dim": point_dim,
-        "tactile_dim": tactile_dim,
-        "tactile_mode": cfg.tactile_mode,
-        "groups": cfg.groups,
-        "head_weights_used": weights,
+        "joint_dim": int(cfg.joint_dim),
+        "groups": list(cfg.groups),
+        "head_weights_used": weights_used,
+        "features": cfg.features,
+        "sampling": cfg.sampling,
+        "num_points": cfg.num_points,
+        "missing_policy": cfg.missing_policy,
+        "action_format": cfg.action_format,
+        "mesh_sampling": cfg.mesh_sampling,
+        "mesh_points": int(cfg.mesh_points),
+        "mesh_name": cfg.mesh_name,
+        "mesh_subdir": cfg.mesh_subdir,
+        "control_subdir": cfg.control_subdir,
     }
     return model, loss_fn, meta
 
 
-# -------------------------
-# Loss computation (supports optional action_mask)
-# -------------------------
-def compute_losses(
-    preds: Dict[str, torch.Tensor],            # head -> (B,T,d)
-    targets: Dict[str, torch.Tensor],          # head -> (B,T,d)
-    head_names: list,
-    head_weights: Tuple[float, ...],
-    action_mask: Optional[torch.Tensor] = None
-):
-    B, T = next(iter(preds.values())).shape[:2]
-    device = next(iter(preds.values())).device
+def flatten_targets(
+    actions: Dict[str, torch.Tensor],
+    head_names: Sequence[str],
+    head_dims_step: Sequence[int],
+    action_len: int,
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    targets: Dict[str, torch.Tensor] = {}
 
-    if action_mask is None:
-        total = torch.zeros((), device=device)
-        by_head = {}
-        for hn, w in zip(head_names, head_weights):
-            p = preds[hn].reshape(B * T, -1)
-            y = targets[hn].reshape(B * T, -1)
-            l = torch.mean((p - y) ** 2)
-            by_head[hn] = l
-            total = total + (w * l)
-        return total, by_head
+    B = None
+    for v in actions.values():
+        if isinstance(v, torch.Tensor):
+            B = int(v.shape[0])
+            break
+    if B is None:
+        raise ValueError("actions dict is empty; cannot infer batch size")
 
-    m = action_mask
-    if m.dtype != torch.bool:
-        m = m > 0.5
-    m_flat = m.reshape(B * T)
+    T = int(action_len)
 
-    total = torch.zeros((), device=device)
-    by_head = {}
-    for hn, w in zip(head_names, head_weights):
-        p = preds[hn].reshape(B * T, -1)
-        y = targets[hn].reshape(B * T, -1)
-        if m_flat.any():
-            diff = p[m_flat] - y[m_flat]
-            l = (diff * diff).mean()
+    for hn, d_step in zip(head_names, head_dims_step):
+        if hn in actions:
+            x = actions[hn]
+            if x.dim() != 3:
+                raise ValueError(f"actions['{hn}'] must be [B,T,D], got {tuple(x.shape)}")
+            if int(x.shape[1]) != T:
+                raise ValueError(f"actions['{hn}'] has T={x.shape[1]} but action_len={T}")
+            if int(x.shape[2]) != int(d_step):
+                raise ValueError(f"actions['{hn}'] has D={x.shape[2]} but expected {d_step}")
+            targets[hn] = x.reshape(B, T * int(d_step)).to(device, non_blocking=True)
         else:
-            l = torch.zeros((), device=device)
-        by_head[hn] = l
-        total = total + (w * l)
-    return total, by_head
+            targets[hn] = torch.zeros((B, T * int(d_step)), device=device, dtype=torch.float32)
+
+    return targets
 
 
-# -------------------------
-# Checkpoint I/O
-# -------------------------
-def save_ckpt(path: str, model, opt, step: int, meta: Dict[str, Any]):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(), "meta": meta}, path)
+# ---------------------------------------------------------------------
+# train_one_epoch (unchanged)
+# ---------------------------------------------------------------------
+def train_one_epoch(
+    *,
+    cfg: TrainConfig,
+    model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
+    opt: torch.optim.Optimizer,
+    loader: DataLoader,
+    device: torch.device,
+    meta: Dict[str, Any],
+    global_step: int,
+    train_start_step: int,
+    train_t0: float,
+):
+    model.train()
 
-def try_load_latest_ckpt(save_dir: str, model, opt) -> int:
-    if not os.path.isdir(save_dir):
-        return 0
-    ckpts = [p for p in os.listdir(save_dir) if p.endswith(".pt")]
-    if not ckpts:
-        return 0
-    ckpts.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
-    latest = os.path.join(save_dir, ckpts[-1])
-    data = torch.load(latest, map_location="cpu")
-    model.load_state_dict(data["model"])
-    opt.load_state_dict(data["opt"])
-    return int(data.get("step", 0))
+    head_names = meta["head_names"]
+    head_dims_step = meta["head_dims_step"]
+    head_weights_used = meta["head_weights_used"]
+
+    running: Dict[str, float] = {"loss_total": 0.0, "grad_norm": 0.0}
+    for hn in head_names:
+        running[f"loss_{hn}"] = 0.0
+
+    n = 0
+    num_batches = 0
+
+    for batch in loader:
+        if global_step >= cfg.max_steps:
+            break
+
+        pc_raw = batch["point_cloud"]
+        pc, point_mask = pad_stack_pointcloud_if_needed(pc_raw)
+        pc = pc.to(device, non_blocking=True)
+        point_mask = point_mask.to(device, non_blocking=True) if point_mask is not None else None
+        B = int(pc.shape[0])
+
+        joint = torch.zeros((B, int(cfg.joint_dim)), device=device, dtype=torch.float32)
+
+        actions: Dict[str, torch.Tensor] = batch["actions"]
+        targets = flatten_targets(
+            actions=actions,
+            head_names=head_names,
+            head_dims_step=head_dims_step,
+            action_len=int(cfg.action_len),
+            device=device,
+        )
+
+        preds = model(joint=joint, point_cloud=pc, point_mask=point_mask)
+        total_loss, loss_by_head = loss_fn(preds, targets)
+
+        opt.zero_grad(set_to_none=True)
+        total_loss.backward()
+
+        if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
+            gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
+            grad_norm = float(gn) if not isinstance(gn, float) else gn
+        else:
+            grad_norm = 0.0
+
+        opt.step()
+
+        n += B
+        num_batches += 1
+        running["loss_total"] += float(total_loss.detach().cpu()) * B
+        running["grad_norm"] += float(grad_norm) * B
+        for hn in head_names:
+            running[f"loss_{hn}"] += float(loss_by_head[hn].detach().cpu()) * B
+
+        if cfg.log_every and cfg.log_every > 0 and (global_step % cfg.log_every) == 0:
+            dt = time.time() - train_t0
+            steps_per_sec = (global_step - train_start_step + 1) / max(dt, 1e-9)
+
+            log_dict = {
+                "train/step": global_step,
+                "train/loss_total": float(total_loss.detach().cpu()),
+                "train/grad_norm": float(grad_norm),
+                "perf/steps_per_sec": steps_per_sec,
+                "data/batch_size": B,
+                "data/point_dim": int(pc.shape[-1]),
+                "data/num_points": int(pc.shape[1]),
+                "data/action_len": int(cfg.action_len),
+            }
+            for i, hn in enumerate(head_names):
+                log_dict[f"train/loss_{hn}"] = float(loss_by_head[hn].detach().cpu())
+                log_dict[f"loss_weight/{hn}"] = float(head_weights_used[i])
+
+            meta_list = batch.get("meta", None)
+            if isinstance(meta_list, list) and len(meta_list) > 0 and isinstance(meta_list[0], dict):
+                if "episode_id" in meta_list[0]:
+                    log_dict["data/example_episode_id"] = meta_list[0]["episode_id"]
+
+            wandb.log(log_dict, step=global_step)
+
+        if cfg.ckpt_every and cfg.ckpt_every > 0 and (global_step > 0) and (global_step % cfg.ckpt_every == 0):
+            ckpt_path = os.path.join(cfg.save_dir, f"ckpt_step_{global_step}.pt")
+            save_ckpt(ckpt_path, model, opt, step=global_step, meta=meta)
+
+            if wandb.run is not None:
+                art = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model")
+                art.add_file(ckpt_path)
+                wandb.log_artifact(art)
+
+        global_step += 1
+
+    if num_batches == 0:
+        raise RuntimeError(
+            "DataLoader produced 0 batches in this epoch. "
+            "Common cause: drop_last=True with batch_size > dataset_len."
+        )
+
+    denom = max(n, 1)
+    for k in list(running.keys()):
+        running[k] /= denom
+    running["num_samples"] = float(n)
+    running["num_batches"] = float(num_batches)
+    return running, global_step
 
 
-# -------------------------
-# Main training loop
-# -------------------------
+# ---------------------------------------------------------------------
+# Main (UPDATED DATASET INIT)
+# ---------------------------------------------------------------------
 def main(cfg: TrainConfig):
     seed_everything(cfg.seed)
-    device = torch.device(cfg.device if torch.cuda.is_available() or cfg.device == "cpu" else "cpu")
 
-    # ✅ NEW dataset (episode-level)
-    ds = PointCloudTactileActionEpisodeDataset(
-        obs_root=cfg.obs_root,
-        tactile_root=cfg.tactile_root,
-        act_root=cfg.act_root,
-        pc_name=cfg.pc_name,
-        tactile_name=cfg.tactile_name,
+    device = torch.device(cfg.device if (cfg.device == "cpu" or torch.cuda.is_available()) else "cpu")
+    os.makedirs(cfg.save_dir, exist_ok=True)
+
+    # NEW: one root, episodes contain mesh/ + control/
+    ds = PointCloudActionEpisodeDataset(
+        obs_root=cfg.base_path,
+        act_root=None,  # IMPORTANT: actions are inside each episode now
+
+        # NEW layout
+        mesh_subdir=cfg.mesh_subdir,
+        mesh_name=cfg.mesh_name,
+        control_subdir=cfg.control_subdir,
+
+        # mesh -> points knobs
+        mesh_sampling=cfg.mesh_sampling,
+        mesh_points=cfg.mesh_points,
+
+        # existing knobs
         groups=cfg.groups,
-        tactile_channels=cfg.tactile_channels,
-        tactile_points=cfg.tactile_points,
+        missing_policy=cfg.missing_policy,
+        action_len=cfg.action_len,
+        action_format=cfg.action_format,
+        interp_mode_map=cfg.interp_mode_map,
         num_points=cfg.num_points,
+        sampling=cfg.sampling,
         features=cfg.features,
+        seed=cfg.seed,
+        cache_point_cloud=cfg.cache_point_cloud,
+        pc_cache_max_items=cfg.pc_cache_max_items,
     )
 
     loader = DataLoader(
         ds,
         batch_size=cfg.batch_size,
-        shuffle=cfg.shuffle,  # ✅ shuffle EPISODES (correct)
+        shuffle=cfg.shuffle,
         num_workers=cfg.num_workers,
-        pin_memory=(device.type == "cuda"),
-        drop_last=True,
-        collate_fn=lambda b: collate_pointcloud_to_action_chunk(b, chunk_len=cfg.chunk_len),
+        drop_last=cfg.drop_last,
+        pin_memory=(cfg.pin_memory and cfg.device.startswith("cuda")),
+        persistent_workers=(cfg.persistent_workers and cfg.num_workers > 0),
+        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
-    # build from a real batch
     first_batch = next(iter(loader))
-    model, loss_fn_unused, meta = build_model_from_batch(cfg, first_batch, device)
+    model, loss_fn, meta = build_model_and_loss(cfg, first_batch, device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-
-    start_step = try_load_latest_ckpt(cfg.save_dir, model, opt)
+    start_step = try_load_latest_ckpt(cfg.save_dir, model, opt) if cfg.resume else 0
+    global_step = int(start_step)
 
     run_id = None
     if cfg.resume and os.path.exists(cfg.run_id_file):
@@ -417,117 +544,65 @@ def main(cfg: TrainConfig):
     except Exception:
         pass
 
-    head_names = meta["head_names"]
-    head_dims_step = meta["head_dims_step"]
-    head_weights_used = meta["head_weights_used"]
+    train_t0 = time.time()
+    train_start_step = int(start_step)
+    epoch = 0
 
-    model.train()
-    t0 = time.time()
-    data_iter = iter(loader)
+    try:
+        while global_step < cfg.max_steps:
+            epoch += 1
+            epoch_stats, global_step = train_one_epoch(
+                cfg=cfg,
+                model=model,
+                loss_fn=loss_fn,
+                opt=opt,
+                loader=loader,
+                device=device,
+                meta=meta,
+                global_step=global_step,
+                train_start_step=train_start_step,
+                train_t0=train_t0,
+            )
 
-    for step in range(start_step, cfg.max_steps):
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            data_iter = iter(loader)
-            batch = next(data_iter)
+            wandb.log(
+                {"epoch": epoch, **{f"epoch/{k}": v for k, v in epoch_stats.items()}},
+                step=global_step,
+            )
 
-        obs = get_obs_dict(batch)
+        final_path = os.path.join(cfg.save_dir, f"ckpt_step_{cfg.max_steps}.pt")
+        save_ckpt(final_path, model, opt, step=cfg.max_steps, meta=meta)
 
-        pc = get_point_cloud(obs).to(device, non_blocking=True)
-        B = pc.shape[0]
-
-        joint = get_joint(obs, B=B, device=device).to(device, non_blocking=True)
-
-        tactile = get_tactile(obs)
-        tactile = tactile.to(device, non_blocking=True) if tactile is not None else None
-        tactile = preprocess_tactile(tactile, mode=cfg.tactile_mode)
-
-        action_chunk = get_action_chunk(batch)
-        action_chunk = {k: v.to(device, non_blocking=True) for k, v in action_chunk.items()} if isinstance(action_chunk, dict) else action_chunk.to(device, non_blocking=True)
-
-        action_mask = get_action_mask(batch)
-        action_mask = action_mask.to(device, non_blocking=True) if action_mask is not None else None
-
-        # forward
-        preds_flat = model(joint=joint, point_cloud=pc, tactile=tactile)
-
-        # reshape preds to (B, T, d_step)
-        preds = {}
-        for hn, d_step in zip(head_names, head_dims_step):
-            preds[hn] = preds_flat[hn].view(B, cfg.chunk_len, d_step)
-
-        # targets
-        if isinstance(action_chunk, dict):
-            targets = {hn: action_chunk[hn] for hn in head_names}
-            for hn, d_step in zip(head_names, head_dims_step):
-                if targets[hn].dim() == 2:
-                    targets[hn] = targets[hn].unsqueeze(1).expand(B, cfg.chunk_len, d_step)
-        else:
-            if action_chunk.dim() == 2:
-                action_chunk = action_chunk.unsqueeze(1).expand(B, cfg.chunk_len, action_chunk.shape[-1])
-            BT = B * cfg.chunk_len
-            action_flat = action_chunk.reshape(BT, -1)
-            targets_flat = split_action_vector(action_flat, head_dims_step, head_names)
-            targets = {hn: targets_flat[hn].view(B, cfg.chunk_len, d_step) for hn, d_step in zip(head_names, head_dims_step)}
-
-        total_loss, loss_by_head = compute_losses(
-            preds=preds,
-            targets=targets,
-            head_names=head_names,
-            head_weights=head_weights_used,
-            action_mask=action_mask,
-        )
-
-        opt.zero_grad(set_to_none=True)
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm) if cfg.grad_clip_norm > 0 else 0.0
-        opt.step()
-
-        if (step % cfg.log_every) == 0:
-            dt = time.time() - t0
-            steps_per_sec = (step - start_step + 1) / max(dt, 1e-9)
-
-            log_dict = {
-                "train/step": step,
-                "train/loss_total": float(total_loss.detach().cpu()),
-                "train/grad_norm": float(grad_norm) if not isinstance(grad_norm, float) else grad_norm,
-                "perf/steps_per_sec": steps_per_sec,
-                "data/batch_size": B,
-                "data/num_points": int(pc.shape[1]),
-                "data/has_tactile": 0 if tactile is None else 1,
-                "data/tactile_mode": cfg.tactile_mode,
-            }
-            for hn in head_names:
-                log_dict[f"train/loss_{hn}"] = float(loss_by_head[hn].detach().cpu())
-
-            if action_mask is not None:
-                valid = (action_mask > 0.5) if action_mask.dtype != torch.bool else action_mask
-                log_dict["data/mask_valid_frac"] = float(valid.float().mean().detach().cpu())
-
-            wandb.log(log_dict, step=step)
-
-        if (step > 0) and (step % cfg.ckpt_every == 0):
-            ckpt_path = os.path.join(cfg.save_dir, f"ckpt_step_{step}.pt")
-            save_ckpt(ckpt_path, model, opt, step=step, meta=meta)
-
-            art = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model")
-            art.add_file(ckpt_path)
-            wandb.log_artifact(art)
-
-    final_path = os.path.join(cfg.save_dir, f"ckpt_step_{cfg.max_steps}.pt")
-    save_ckpt(final_path, model, opt, step=cfg.max_steps, meta=meta)
-    wandb.finish()
+    finally:
+        wandb.finish()
 
 
 if __name__ == "__main__":
     cfg = TrainConfig(
-        obs_root="path/to/obs_root",
-        tactile_root="path/to/tactile_root",
-        act_root="path/to/act_root",
-        wandb_project="rh-pointcloud-chunk",
+        base_path="./example_dataset/strawberry_real",
+        mesh_subdir="mesh",
+        mesh_name="strawberry.stl",
+        control_subdir="control",
+
+        mesh_sampling="surface",
+        mesh_points=8192,
+
+        wandb_project="pointcloud-action_fulldataset_batchsize_four",
         wandb_run_name=None,
-        groups=("n2","n5","lh","rh"),          # or ("n2","n5","lh","rh")
-        tactile_mode="first",    # safest default
+        head_names=("n2", "n5", "lh", "rh"),
+        groups=("n2", "n5", "lh", "rh"),
+        missing_policy="initial",
+        action_len=64,
+        action_format="dict",
+
+        batch_size=4,
+        num_workers=1,
+        persistent_workers=True,
+        num_points=4096,
+        features=("xyz",),
+        cache_point_cloud=True,
+        pc_cache_max_items=512,
+        device="cuda",
+        head_weights=(1.0,),
+        drop_last=False,
     )
     main(cfg)

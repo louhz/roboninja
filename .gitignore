@@ -163,3 +163,7 @@ potato
 
 *.log
 *.error
+
+
+*.bak
+*.pt

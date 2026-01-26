@@ -1,725 +1,959 @@
-# =============================================================================
-# Right-hand MULTI-MODAL dataset: point cloud + tactile (+ rh actions)
-# Paste this BELOW the point-cloud dataset code I sent earlier.
-#
-# Requires the earlier module to define:
-#   - RightHandPointCloudActionDataset
-#   - _timestamp_from_name   (or similar filename timestamp helper)
-# =============================================================================
+"""
+pointcloud_action_datasets.py
 
+Folder layout (typical):
+Each observation only have one point cloud
+
+
+# so you should shuffle over episodes, not inside the episodes
+  obs_root/
+    episode_001/
+      point.ply
+    episode_002/
+      point.ply
+
+  act_root/
+    episode_001/
+      nova2.txt
+      nova5.txt
+      left.txt
+      right.txt
+    episode_002/
+      ...
+
+"""
 from __future__ import annotations
 
+import ast
+import csv
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
-from learning.model.dataloader import RightHandPointCloudActionDataset
-
-# -----------------------------------------------------------------------------
-# TACTILE load/save utilities (adapted from your pasted thermal utilities)
-# -----------------------------------------------------------------------------
-
-def _srgb_to_linear(arr: np.ndarray) -> np.ndarray:
-    arr = arr.astype(np.float32, copy=False)
-    a = 0.055
-    return np.where(arr <= 0.04045, arr / 12.92, ((arr + a) / (1 + a)) ** 2.4)
+import torch.nn.functional as F
+from torch.utils.data import Dataset
 
 
-def _jet_lut(n: int = 256) -> np.ndarray:
-    x = np.linspace(0.0, 1.0, n, dtype=np.float32)
-    r = np.clip(1.5 - np.abs(4 * x - 3), 0.0, 1.0)
-    g = np.clip(1.5 - np.abs(4 * x - 2), 0.0, 1.0)
-    b = np.clip(1.5 - np.abs(4 * x - 1), 0.0, 1.0)
-    return np.stack([r, g, b], axis=1)
+# ============================================================
+# Interpolation helper (unchanged from your code)
+# ============================================================
 
-
-def _map_rgb_via_lut(
-    arr_rgb: np.ndarray,
-    lut: np.ndarray,
-    assume_srgb: bool = True,
-    chunk: int = 200_000,
-) -> np.ndarray:
+def _interp_seq_torch(seq: torch.Tensor, target_len: int, mode: str = "linear") -> torch.Tensor:
     """
-    Invert a colormap by nearest-neighbor in RGB space.
-    Returns scalar map in [0,1], shape [H,W].
+    Resample a sequence [L, D] -> [target_len, D] using torch interpolation.
+    - mode: "linear" (good for continuous) or "nearest" (good for discrete-ish controls)
     """
-    H, W = arr_rgb.shape[:2]
+    if target_len <= 0:
+        raise ValueError("target_len must be > 0")
+    if seq.ndim != 2:
+        raise ValueError(f"Expected seq [L,D], got {tuple(seq.shape)}")
 
-    # Normalize to [0,1]
-    if arr_rgb.dtype == np.uint8:
-        rgb = arr_rgb.astype(np.float32) / 255.0
-    elif arr_rgb.dtype == np.uint16:
-        rgb = arr_rgb.astype(np.float32) / 65535.0
+    L, D = seq.shape
+    seq = seq.to(dtype=torch.float32)
+
+    if L == target_len:
+        return seq
+    if L == 0:
+        return torch.zeros((target_len, D), dtype=torch.float32)
+    if L == 1:
+        return seq.repeat(target_len, 1)
+
+    x = seq.transpose(0, 1).unsqueeze(0)  # [1, D, L]
+    if mode == "linear":
+        y = F.interpolate(x, size=target_len, mode="linear", align_corners=True)
+    elif mode == "nearest":
+        y = F.interpolate(x, size=target_len, mode="nearest")
     else:
-        rgb = arr_rgb.astype(np.float32, copy=False)
-        mx, mn = float(rgb.max()), float(rgb.min())
-        if mx > 1.0 or mn < 0.0:
-            rng = mx - mn if mx > mn else 1.0
-            rgb = (rgb - mn) / rng
-
-    if assume_srgb:
-        rgb = _srgb_to_linear(rgb)
-
-    flat = rgb.reshape(-1, 3)               # [P,3]
-    lut = lut.astype(np.float32, copy=False)  # [N,3]
-    P = flat.shape[0]
-    N = lut.shape[0]
-
-    out = np.empty(P, dtype=np.float32)
-    for i in range(0, P, chunk):
-        block = flat[i : i + chunk]  # [B,3]
-        d2 = ((block[:, None, :] - lut[None, :, :]) ** 2).sum(axis=2)  # [B,N]
-        idx = np.argmin(d2, axis=1).astype(np.float32)                 # [B]
-        out[i : i + chunk] = idx / (N - 1.0)
-
-    return out.reshape(H, W)
+        raise ValueError("mode must be 'linear' or 'nearest'")
+    return y.squeeze(0).transpose(0, 1)  # [target_len, D]
 
 
-def _rgb_pseudothermal_to_scalar(
-    arr_rgb: np.ndarray,
-    method: str = "rb_ratio",     # "rb_ratio" | "nearest"
-    colormap: str = "jet",
-    custom_lut: Optional[np.ndarray] = None,
-    assume_srgb: bool = True,
-    nearest_chunk: int = 200_000,
-) -> np.ndarray:
+# ============================================================
+# Action conventions (same as your current code)
+# ============================================================
+
+EXPECTED_DIMS_ALL: Dict[str, int] = {"n2": 6, "n5": 6, "lh": 10, "rh": 10}
+
+DEFAULT_INITIALS_ALL: Dict[str, np.ndarray] = {
+    "n2": np.zeros(6, dtype=np.float64),             # degrees
+    "n5": np.zeros(6, dtype=np.float64),             # degrees
+    "lh": np.full(10, 255.0, dtype=np.float64),      # 0..255 controls
+    "rh": np.full(10, 255.0, dtype=np.float64),      # 0..255 controls
+}
+
+
+def _make_constant_seq(num_steps: int, init_vec: np.ndarray) -> np.ndarray:
+    return np.tile(init_vec[None, :], (num_steps, 1)).astype(np.float64, copy=False)
+
+
+def _expand_or_trim_to_dim(q: np.ndarray, target_dim: int, init_vec: np.ndarray) -> np.ndarray:
+    q = np.asarray(q)
+    if q.ndim != 2:
+        raise ValueError(f"Expected q to be 2D (N,D). Got shape {q.shape}.")
+    N, D = q.shape
+    if D == target_dim:
+        return q
+    out = np.empty((N, target_dim), dtype=q.dtype)
+    m = min(D, target_dim)
+    out[:, :m] = q[:, :m]
+    if target_dim > D:
+        out[:, m:] = init_vec[m:].reshape(1, -1)
+    return out
+
+
+def _fill_nans_with_init(q: np.ndarray, init_vec: np.ndarray) -> np.ndarray:
+    q = np.asarray(q).copy()
+    bad = ~np.isfinite(q)
+    if bad.any():
+        for j in range(q.shape[1]):
+            col_bad = bad[:, j]
+            if col_bad.any():
+                q[col_bad, j] = init_vec[j]
+    return q
+
+
+# ============================================================
+# ROS-like TXT action loading (same logic as your current code)
+# ============================================================
+
+def load_ros_txt_positions(txt_path: Union[str, Path], key: str = "position") -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convert pseudo-colored tactile/thermal RGB (red=hot/high, blue=cold/low) to scalar [0,1].
-    """
-    assert arr_rgb.ndim == 3 and arr_rgb.shape[-1] >= 3, "Expected RGB image array."
-
-    if method == "rb_ratio":
-        # Normalize to [0,1]
-        if arr_rgb.dtype == np.uint8:
-            rgb = arr_rgb.astype(np.float32) / 255.0
-        elif arr_rgb.dtype == np.uint16:
-            rgb = arr_rgb.astype(np.float32) / 65535.0
-        else:
-            rgb = arr_rgb.astype(np.float32, copy=False)
-            mx, mn = float(rgb.max()), float(rgb.min())
-            if mx > 1.0 or mn < 0.0:
-                rng = mx - mn if mx > mn else 1.0
-                rgb = (rgb - mn) / rng
-
-        if assume_srgb:
-            rgb = _srgb_to_linear(rgb)
-
-        R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-        eps = 1e-6
-
-        rb = R / (R + B + eps)
-        g_chroma = G / (R + G + B + eps)
-        hotness = rb + 0.10 * (g_chroma - 1.0 / 3.0)
-        return np.clip(hotness, 0.0, 1.0).astype(np.float32)
-
-    if method == "nearest":
-        lut = custom_lut
-        if lut is None:
-            lut = _jet_lut(256) if colormap.lower() == "jet" else _jet_lut(256)
-        return _map_rgb_via_lut(arr_rgb, lut, assume_srgb=assume_srgb, chunk=nearest_chunk).astype(np.float32)
-
-    raise ValueError("method must be one of {'rb_ratio','nearest'}")
-
-
-def _load_tactile_array(path: Path, keep_channels: bool = True) -> np.ndarray:
-    """
-    Loads a tactile frame into a numpy array.
-    Supports:
-      - .npy: HxW or HxWx{1,3}
-      - .npz: 'tactile' or 'thermal' or first array
-      - image files: PNG/TIFF/JPG etc
-    """
-    from PIL import Image  # local import
-
-    ext = path.suffix.lower()
-
-    if ext == ".npy":
-        arr = np.load(path)
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = arr[..., 0]
-        return arr.astype(np.float64, copy=False)
-
-    if ext == ".npz":
-        z = np.load(path)
-        if "tactile" in z:
-            arr = z["tactile"]
-        elif "thermal" in z:
-            arr = z["thermal"]
-        else:
-            arr = z[list(z.keys())[0]]
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = arr[..., 0]
-        return arr.astype(np.float64, copy=False)
-
-    # Image files
-    with Image.open(path) as im:
-        arr = np.array(im)
-
-    if arr.ndim == 3 and arr.shape[-1] == 1:
-        arr = arr[..., 0]
-    if not keep_channels and arr.ndim == 3:
-        arr = arr.mean(axis=-1)
-
-    return arr.astype(np.float64, copy=False)
-
-
-def _normalize_tactile(
-    arr: np.ndarray,
-    mode: str = "percentile",     # "percentile", "minmax", "fixed", "none"
-    p_low: float = 2.0,
-    p_high: float = 98.0,
-    fixed_range: Optional[Tuple[float, float]] = None,
-    global_range: Optional[Tuple[float, float]] = None,
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """
-    Normalize scalar tactile to [0,1].
-    Returns (scaled, info_dict with lo/hi).
-    """
-    info: Dict[str, Any] = {}
-    a = arr
-
-    if global_range is not None:
-        lo, hi = global_range
-    elif mode == "percentile":
-        lo = float(np.percentile(a, p_low))
-        hi = float(np.percentile(a, p_high))
-    elif mode == "minmax":
-        lo = float(np.min(a))
-        hi = float(np.max(a))
-    elif mode == "fixed":
-        if fixed_range is None:
-            raise ValueError("fixed_range must be provided when mode='fixed'")
-        lo, hi = fixed_range
-    elif mode == "none":
-        # Heuristic by dtype-ish range
-        lo, hi = float(np.min(a)), float(np.max(a))
-    else:
-        raise ValueError("mode must be one of {'percentile','minmax','fixed','none'}")
-
-    if hi <= lo:
-        hi = lo + 1.0
-
-    scaled = (a - lo) / (hi - lo)
-    scaled = np.clip(scaled, 0.0, 1.0).astype(np.float32, copy=False)
-    info.update({"lo": lo, "hi": hi})
-    return scaled, info
-
-
-def load_tactile_tensor(
-    path: Path,
-    channels: int = 1,                 # 1 or 3
-    rgb_pseudo: bool = True,           # treat RGB as pseudo-colored tactile/thermal
-    rgb_method: str = "rb_ratio",      # "rb_ratio" or "nearest"
-    colormap: str = "jet",
-    custom_lut: Optional[np.ndarray] = None,
-    assume_srgb: bool = True,
-    nearest_chunk: int = 200_000,
-    norm_mode: str = "percentile",
-    p_low: float = 2.0,
-    p_high: float = 98.0,
-    fixed_range: Optional[Tuple[float, float]] = None,
-    global_range: Optional[Tuple[float, float]] = None,
-) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    """
-    HOOK: If you have your own tactile script, replace THIS function body to call it.
+    Parse ROS-like text with blocks:
+      seq: <int>
+      secs: <int>
+      nsecs: <int>
+      position: [ ... ]
 
     Returns:
-      tactile_tensor: FloatTensor [C,H,W] in 0..1
-      info: dict with lo/hi (normalization stats)
+      t: (N,) seconds from 0
+      q: (N, D)
     """
-    raw = _load_tactile_array(path, keep_channels=True)
+    txt_path = str(txt_path)
+    t_list: List[float] = []
+    q_list: List[np.ndarray] = []
+    secs: Optional[int] = None
+    nsecs: int = 0
 
-    # Convert to scalar map
-    if raw.ndim == 2:
-        scalar = raw.astype(np.float32, copy=False)
-    elif raw.ndim == 3 and raw.shape[-1] >= 3:
-        if rgb_pseudo:
-            scalar = _rgb_pseudothermal_to_scalar(
-                raw,
-                method=rgb_method,
-                colormap=colormap,
-                custom_lut=custom_lut,
-                assume_srgb=assume_srgb,
-                nearest_chunk=nearest_chunk,
-            ).astype(np.float32, copy=False)
-        else:
-            scalar = raw[..., :3].mean(axis=-1).astype(np.float32, copy=False)
-    elif raw.ndim == 3 and raw.shape[-1] == 1:
-        scalar = raw[..., 0].astype(np.float32, copy=False)
-    else:
-        raise ValueError(f"Unsupported tactile array shape: {raw.shape} for {path}")
-
-    scaled, info = _normalize_tactile(
-        scalar,
-        mode=norm_mode,
-        p_low=p_low,
-        p_high=p_high,
-        fixed_range=fixed_range,
-        global_range=global_range,
-    )
-
-    if channels == 1:
-        t = torch.from_numpy(scaled)[None, ...]  # [1,H,W]
-    elif channels == 3:
-        t = torch.from_numpy(np.stack([scaled, scaled, scaled], axis=0))  # [3,H,W]
-    else:
-        raise ValueError("channels must be 1 or 3")
-
-    return t.float(), info
-
-
-def save_tactile(
-    path: Union[str, Path],
-    tactile: np.ndarray,
-    key: str = "tactile",
-) -> None:
-    """
-    HOOK: If you have your own tactile save script, replace THIS function body to call it.
-    """
-    from PIL import Image  # local import
-
-    path = Path(path)
-    tactile = np.asarray(tactile)
-
-    ext = path.suffix.lower()
-    if ext == ".npy":
-        np.save(path, tactile)
-        return
-    if ext == ".npz":
-        np.savez_compressed(path, **{key: tactile})
-        return
-
-    # image save fallback: assumes tactile is [H,W] in 0..1 or 0..255
-    t = tactile.astype(np.float32)
-    if t.ndim == 3 and t.shape[0] in (1, 3):
-        # [C,H,W] -> [H,W] if 1ch, else take mean
-        if t.shape[0] == 1:
-            t = t[0]
-        else:
-            t = t.mean(axis=0)
-
-    if t.max() <= 1.5:
-        t = np.clip(t, 0.0, 1.0) * 255.0
-    t8 = np.clip(t, 0.0, 255.0).astype(np.uint8)
-    Image.fromarray(t8).save(path)
-
-
-# -----------------------------------------------------------------------------
-# Tactile frame listing + alignment helpers
-# -----------------------------------------------------------------------------
-
-def _list_tactile_sorted(root: Path, tactile_glob: str) -> List[Path]:
-    """
-    Lists tactile frames. Supports images and arrays.
-    """
-    paths: List[Path] = []
-    if tactile_glob:
-        paths.extend(sorted(root.glob(tactile_glob)))
-
-    if not paths:
-        for ext in [
-            "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.tif", "**/*.tiff",
-            "**/*.npy", "**/*.npz"
-        ]:
-            paths.extend(sorted(root.glob(ext)))
-
-    return paths
-
-
-def _build_timebase_from_names_or_fps(
-    paths: List[Path],
-    default_fps: float,
-    timestamp_fn,
-) -> Tuple[np.ndarray, bool]:
-    """
-    Returns (t, have_real_timestamps).
-    - If filename timestamps exist for all frames: uses them and returns True.
-    - Else: returns a fixed fps timebase and returns False.
-    """
-    ts: List[float] = []
-    ok = True
-    for p in paths:
-        t = timestamp_fn(p)
-        if t is None:
-            ok = False
-            break
-        ts.append(float(t))
-
-    if ok and ts:
-        arr = np.asarray(ts, dtype=np.float64)
-        arr -= arr[0]
-        return arr, True
-
-    dt = 1.0 / default_fps if default_fps > 0 else 1.0 / 30.0
-    return np.arange(len(paths), dtype=np.float64) * dt, False
-
-
-def _nearest_index_map(t_query: np.ndarray, t_src: np.ndarray) -> np.ndarray:
-    """
-    For each t_query, find nearest index in t_src (both sorted).
-    """
-    t_query = np.asarray(t_query, dtype=np.float64).reshape(-1)
-    t_src = np.asarray(t_src, dtype=np.float64).reshape(-1)
-
-    if len(t_src) == 0:
-        return np.full((len(t_query),), -1, dtype=np.int64)
-
-    idx = np.searchsorted(t_src, t_query, side="left")
-    idx = np.clip(idx, 0, len(t_src) - 1)
-    prev = np.clip(idx - 1, 0, len(t_src) - 1)
-    use_prev = (idx > 0) & (np.abs(t_query - t_src[prev]) <= np.abs(t_src[idx] - t_query))
-    idx = np.where(use_prev, prev, idx)
-    return idx.astype(np.int64)
-
-
-# -----------------------------------------------------------------------------
-# Collate: episode batch with tactile
-# -----------------------------------------------------------------------------
-
-def collate_episode_pointcloud_tactile(frames: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Episode-collate for multimodal frames (same-episode requirement, like your original).
-    Returns:
-      {
-        "point_cloud": Tensor [T,N,F] OR list[Tensor [Ni,F]],
-        "tactile":     Tensor [T,C,H,W] OR list[Tensor [C,H,W]],
-        "actions":     {k: Tensor [T,Dk]},
-        "t_frame":     Tensor [T],
-        "meta":        dict(...)
-      }
-    """
-    if len(frames) == 0:
-        raise ValueError("Empty batch for collate_episode_pointcloud_tactile")
-
-    ep_id = frames[0]["meta"]["episode_id"]
-    ep_idx = frames[0]["meta"]["episode_idx"]
-    for f in frames[1:]:
-        if f["meta"]["episode_id"] != ep_id:
-            raise ValueError("collate_episode_pointcloud_tactile got frames from multiple episodes.")
-
-    # Point clouds
-    pcs = [f["point_cloud"] for f in frames]
-    if isinstance(pcs[0], torch.Tensor):
-        try:
-            point_cloud = torch.stack(pcs, dim=0)
-        except RuntimeError:
-            point_cloud = pcs
-    else:
-        point_cloud = pcs
-
-    # Tactile
-    tacs = [f["tactile"] for f in frames]
-    if isinstance(tacs[0], torch.Tensor):
-        try:
-            tactile = torch.stack(tacs, dim=0)
-        except RuntimeError:
-            tactile = tacs
-    else:
-        tactile = tacs
-
-    # Actions
-    all_keys = set().union(*(f["actions"].keys() for f in frames))
-    actions: Dict[str, torch.Tensor] = {}
-    for k in sorted(all_keys):
-        mats = [f["actions"][k] for f in frames if k in f["actions"]]
-        if len(mats) != len(frames):
-            D = mats[0].shape[-1]
-            seq = []
-            for f in frames:
-                if k in f["actions"]:
-                    seq.append(f["actions"][k])
+    with open(txt_path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith("secs:"):
+                try:
+                    secs = int(s.split(":", 1)[1].strip())
+                except Exception:
+                    secs = None
+            elif s.startswith("nsecs:"):
+                try:
+                    nsecs = int(s.split(":", 1)[1].strip())
+                except Exception:
+                    nsecs = 0
+            elif s.startswith(f"{key}:"):
+                payload = s.split(":", 1)[1].strip()
+                arr_list = ast.literal_eval(payload)
+                arr = np.asarray(arr_list, dtype=np.float64).reshape(-1)
+                q_list.append(arr)
+                if secs is not None:
+                    t_list.append(float(secs) + float(nsecs or 0) * 1e-9)
                 else:
-                    seq.append(torch.full((D,), float("nan"), dtype=torch.float32))
-            actions[k] = torch.stack(seq, dim=0)
+                    t_list.append(len(t_list) * 1.0)
+
+    if not q_list:
+        raise RuntimeError(f"No '{key}:' entries found in {txt_path}")
+
+    t = np.asarray(t_list, dtype=np.float64)
+    q = np.vstack(q_list)
+
+    t -= t[0]
+    uniq, idx = np.unique(t, return_index=True)
+    return uniq, q[idx]
+
+
+def _load_actions_dir(action_dir: Path) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """
+    Loads available action groups from one episode action directory.
+
+    Files:
+      n2 -> nova2.txt
+      n5 -> nova5.txt
+      lh -> left.txt
+      rh -> right.txt
+    """
+    out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    mapping = {"n2": "nova2.txt", "n5": "nova5.txt", "lh": "left.txt", "rh": "right.txt"}
+
+    for k, fname in mapping.items():
+        p = action_dir / fname
+        if p.exists():
+            try:
+                t, q = load_ros_txt_positions(p)
+                out[k] = (t, q.astype(np.float64))
+            except Exception:
+                # Treat unreadable file as missing, instead of killing the dataset
+                continue
+    return out
+
+
+# ============================================================
+# Point cloud loading (Open3D) - same as your code
+# ============================================================
+
+def _read_point_cloud_open3d(path: Path) -> "tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]":
+    import open3d as o3d
+
+    mesh = o3d.io.read_triangle_mesh(str(path))
+    if len(mesh.vertices) == 0:
+        raise ValueError(f"Empty mesh: {path}")
+
+    pts = np.asarray(mesh.vertices, dtype=np.float32)
+
+    cols: Optional[np.ndarray] = None
+    nors: Optional[np.ndarray] = None
+
+    # Mesh vertex colors / normals (not pcd.*)
+    if mesh.has_vertex_colors():
+        cols = np.asarray(mesh.vertex_colors, dtype=np.float32)
+        if cols.shape != pts.shape:
+            cols = None
+
+    if mesh.has_vertex_normals():
+        nors = np.asarray(mesh.vertex_normals, dtype=np.float32)
+        if nors.shape != pts.shape:
+            nors = None
+
+    return pts, cols, nors
+
+def _sample_or_pad(
+    pts: np.ndarray,
+    cols: Optional[np.ndarray],
+    nors: Optional[np.ndarray],
+    num_points: int,
+    rng: np.random.Generator,
+    method: str = "random",
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    if num_points <= 0:
+        raise ValueError("num_points must be > 0")
+    N = pts.shape[0]
+    if N == num_points:
+        return pts, cols, nors
+
+    if N > num_points:
+        if method == "first":
+            idx = np.arange(num_points)
+        elif method == "random":
+            idx = rng.choice(N, size=num_points, replace=False)
         else:
-            actions[k] = torch.stack(mats, dim=0)
+            raise ValueError("sampling method must be 'random' or 'first'")
+    else:
+        idx = rng.choice(N, size=num_points, replace=True)
 
-    t_frame = torch.tensor([f["t_frame"] for f in frames], dtype=torch.float32)
-
-    meta = {
-        "episode_id": ep_id,
-        "episode_idx": int(ep_idx),
-        "num_frames": len(frames),
-        "frame_indices": [int(f["meta"]["frame_idx"]) for f in frames],
-        "frame_paths": [f["meta"]["frame_path"] for f in frames],
-        "tactile_paths": [f["meta"].get("tactile_path", None) for f in frames],
-        "act_dir": frames[0]["meta"]["act_dir"],
-        "obs_dir": frames[0]["meta"]["obs_dir"],
-        "tactile_dir": frames[0]["meta"].get("tactile_dir", None),
-    }
-
-    return {"point_cloud": point_cloud, "tactile": tactile, "actions": actions, "t_frame": t_frame, "meta": meta}
+    pts2 = pts[idx]
+    cols2 = cols[idx] if cols is not None else None
+    nors2 = nors[idx] if nors is not None else None
+    return pts2, cols2, nors2
 
 
-# -----------------------------------------------------------------------------
-# New dataset: RH point cloud + tactile (+ rh actions)
-# -----------------------------------------------------------------------------
+def _pack_features(
+    pts: np.ndarray,
+    cols: Optional[np.ndarray],
+    nors: Optional[np.ndarray],
+    features: Tuple[str, ...],
+) -> np.ndarray:
+    blocks: List[np.ndarray] = []
+    for f in features:
+        f = f.lower()
+        if f == "xyz":
+            blocks.append(pts)
+        elif f == "rgb":
+            if cols is None:
+                blocks.append(np.zeros_like(pts, dtype=np.float32))
+            else:
+                blocks.append(cols.astype(np.float32, copy=False))
+        elif f in ("normal", "normals"):
+            if nors is None:
+                blocks.append(np.zeros_like(pts, dtype=np.float32))
+            else:
+                blocks.append(nors.astype(np.float32, copy=False))
+        else:
+            raise ValueError(f"Unknown point cloud feature '{f}'. Use ('xyz','rgb','normal').")
+    return np.concatenate(blocks, axis=1).astype(np.float32, copy=False)
+
+
+# ============================================================
+# Tactile CSV/LOG loading (based on your tactile scripts)
+#   - Supports GUI log: timestamp_ms + ch{ch}_p{k}
+#   - Also supports vector-style header: ch{ch}_p{p}_r{row}c{col}
+# ============================================================
+
+_TACTILE_RE_FLAT = re.compile(r"^ch(?P<ch>\d+)_p(?P<p>\d+)$")
+_TACTILE_RE_GRID = re.compile(r"^ch(?P<ch>\d+)_p(?P<p>\d+)_r(?P<row>\d+)c(?P<col>\d+)$")
+
+
+def _safe_float(s: Optional[str]) -> float:
+    if s is None:
+        return 0.0
+    s = s.strip()
+    if s == "":
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
 
 @dataclass
-class _TactileEpisodeIndex:
-    tactile_dir: Path
-    tactile_paths: List[Path]
-    t_tactile: np.ndarray
-    idx_map: np.ndarray              # len = T_pc, maps pc frame index -> tactile frame index
-    have_ts: bool
+class TactileLog:
+    t_sec: np.ndarray          # (T,)
+    data: np.ndarray           # (T, C, P) float32
+    channels: int
+    points: int
+    rows: Optional[int]
+    cols: Optional[int]
+    header_style: str          # "flat" | "grid" | "unknown"
 
 
-class RightHandPointCloudTactileActionDataset(torch.utils.data.Dataset):
+def load_tactile_log(path: Union[str, Path]) -> TactileLog:
     """
-    Right-hand multimodal dataset:
-      - point cloud (Open3D, from your point cloud dataset)
-      - tactile frame (loaded using the tactile loader above)
-      - actions: {'rh': Tensor[10]}
+    Loads tactile.logs (CSV-like).
 
-    It wraps the already-working RightHandPointCloudActionDataset (point_cloud + rh actions),
-    and *adds tactile* aligned per episode by timestamp (or by index fallback).
+    Supported header styles:
+      1) GUI style (from gui_control_tactile_record.py):
+         timestamp_ms, ch0_p0, ..., ch0_p95, ch1_p0, ..., ch4_p95
 
-    Output per __getitem__:
-      {
-        "point_cloud": Tensor [N,F],
-        "tactile":     Tensor [C,H,W],
-        "actions":     {"rh": Tensor[10]},
-        "t_frame":     float,
-        "meta":        {... plus tactile_path ...}
-      }
+      2) Grid style (from draw_tactile_vectors.py style):
+         timestamp_ms, ch0_p0_r0c0, ..., ch0_p?_r11c7, ch1_p0_r0c0, ...
+
+    Returns:
+      TactileLog with data shaped (T, C, P).
+    """
+    path = Path(path)
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        headers = next(reader, None)
+        if headers is None:
+            raise ValueError(f"Empty tactile log: {path}")
+
+        # Timestamp column
+        if "timestamp_ms" in headers:
+            t_idx = headers.index("timestamp_ms")
+        else:
+            # Fallback: assume col0 is time
+            t_idx = 0
+
+        # Detect header style and build mapping
+        any_grid = False
+        any_flat = False
+
+        # grid maps: ch -> {(row,col): col_index}
+        grid_map: Dict[int, Dict[Tuple[int, int], int]] = {}
+        max_row: Dict[int, int] = {}
+        max_col: Dict[int, int] = {}
+
+        # flat maps: ch -> {p: col_index}
+        flat_map: Dict[int, Dict[int, int]] = {}
+        max_p: Dict[int, int] = {}
+
+        for j, name in enumerate(headers):
+            if j == t_idx:
+                continue
+
+            m = _TACTILE_RE_GRID.match(name)
+            if m:
+                any_grid = True
+                ch = int(m.group("ch"))
+                row = int(m.group("row"))
+                col = int(m.group("col"))
+                grid_map.setdefault(ch, {})[(row, col)] = j
+                max_row[ch] = max(max_row.get(ch, -1), row)
+                max_col[ch] = max(max_col.get(ch, -1), col)
+                continue
+
+            m = _TACTILE_RE_FLAT.match(name)
+            if m:
+                any_flat = True
+                ch = int(m.group("ch"))
+                p = int(m.group("p"))
+                flat_map.setdefault(ch, {})[p] = j
+                max_p[ch] = max(max_p.get(ch, -1), p)
+                continue
+
+        if any_grid:
+            header_style = "grid"
+            channels = (max(grid_map.keys()) + 1) if grid_map else 0
+            rows = max(max_row.values()) + 1 if max_row else None
+            cols = max(max_col.values()) + 1 if max_col else None
+            if rows is None or cols is None:
+                # something is wrong in the header
+                rows, cols = None, None
+                points = 0
+            else:
+                points = rows * cols
+
+            # Precompute column indices for each (ch, p_flat)
+            col_idx = [[-1] * points for _ in range(channels)]
+            if rows is not None and cols is not None:
+                for ch, idx_map in grid_map.items():
+                    if ch < 0 or ch >= channels:
+                        continue
+                    for (r, c), j in idx_map.items():
+                        if 0 <= r < rows and 0 <= c < cols:
+                            p_flat = r * cols + c
+                            col_idx[ch][p_flat] = j
+
+        elif any_flat:
+            header_style = "flat"
+            channels = (max(flat_map.keys()) + 1) if flat_map else 0
+            points = (max(max_p.values()) + 1) if max_p else 0
+            rows, cols = None, None
+
+            col_idx = [[-1] * points for _ in range(channels)]
+            for ch, pmap in flat_map.items():
+                if ch < 0 or ch >= channels:
+                    continue
+                for p, j in pmap.items():
+                    if 0 <= p < points:
+                        col_idx[ch][p] = j
+        else:
+            header_style = "unknown"
+            channels, points, rows, cols = 0, 0, None, None
+            col_idx = []
+
+        # Load rows
+        t_ms_list: List[float] = []
+        frames: List[np.ndarray] = []
+
+        for row in reader:
+            if not row:
+                continue
+
+            # timestamp
+            if t_idx < len(row):
+                t_ms = _safe_float(row[t_idx])
+            else:
+                t_ms = float(len(t_ms_list)) * 1.0
+            t_ms_list.append(t_ms)
+
+            if channels <= 0 or points <= 0:
+                continue
+
+            mat = np.zeros((channels, points), dtype=np.float32)
+            for ch in range(channels):
+                idxs = col_idx[ch]
+                for p in range(points):
+                    j = idxs[p]
+                    if 0 <= j < len(row):
+                        mat[ch, p] = float(_safe_float(row[j]))
+                    else:
+                        mat[ch, p] = 0.0
+            frames.append(mat)
+
+    if not frames:
+        # Still return something consistent (length 1), so training doesn't explode
+        t_sec = np.array([0.0], dtype=np.float64)
+        data = np.zeros((1, max(channels, 1), max(points, 1)), dtype=np.float32)
+        return TactileLog(t_sec=t_sec, data=data, channels=max(channels, 1), points=max(points, 1),
+                         rows=rows, cols=cols, header_style=header_style)
+
+    t_ms_arr = np.asarray(t_ms_list, dtype=np.float64)
+    t_ms_arr -= t_ms_arr[0]
+    t_sec = t_ms_arr / 1000.0
+    data = np.stack(frames, axis=0)  # (T, C, P)
+    return TactileLog(t_sec=t_sec, data=data, channels=data.shape[1], points=data.shape[2],
+                     rows=rows, cols=cols, header_style=header_style)
+
+
+def _pad_or_trim_tactile(data: np.ndarray, channels: int, points: int, fill: float = 0.0) -> np.ndarray:
+    """
+    data: (T, C, P)
+    Returns: (T, channels, points)
+    """
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError(f"Expected tactile data (T,C,P), got {data.shape}")
+
+    T, C, P = data.shape
+    out = np.full((T, channels, points), fill, dtype=np.float32)
+    c_use = min(C, channels)
+    p_use = min(P, points)
+    out[:, :c_use, :p_use] = data[:, :c_use, :p_use]
+    return out
+
+
+# ============================================================
+# Episode dataset: ONE point cloud per episode
+# ============================================================
+
+@dataclass
+class EpisodeOnePC:
+    episode_id: str
+    obs_dir: Path
+    pc_path: Path
+    act_dir: Path
+    tactile_path: Optional[Path]
+    actions_raw: Dict[str, Tuple[np.ndarray, np.ndarray]]  # group -> (t, q)
+
+
+def _discover_action_dir(act_root: Path, episode_id: str, expected_files: Sequence[str]) -> Optional[Path]:
+    expected = set(expected_files)
+
+    def has_any(p: Path) -> bool:
+        return any((p / name).exists() for name in expected)
+
+    if act_root.is_file():
+        return act_root.parent
+
+    if act_root.is_dir():
+        cand = act_root / episode_id
+        if cand.is_dir() and has_any(cand):
+            return cand
+        if has_any(act_root):
+            return act_root
+
+        cands = [d for d in act_root.glob("*") if d.is_dir() and episode_id in d.name]
+        for d in cands:
+            if has_any(d):
+                return d
+
+        for d in act_root.glob("*"):
+            if d.is_dir() and has_any(d):
+                return d
+
+    return None
+
+
+class PointCloudTactileActionEpisodeDataset(Dataset):
+    """
+    Episode-level dataset: each episode has EXACTLY ONE point cloud + tactile log + action txts.
+
+    Folder layout:
+      obs_root/
+        episode_001/point.ply
+      tactile_root/
+        episode_001/tactile.logs
+      act_root/
+        episode_001/{nova2.txt,nova5.txt,left.txt,right.txt}
+
+    __getitem__ returns ONE EPISODE.
     """
 
     def __init__(
         self,
-        # point cloud + actions config (passed into the base dataset)
         obs_root: Union[str, Path],
+        tactile_root: Union[str, Path],
         act_root: Union[str, Path],
-        pc_glob: str = "*.ply",
-        default_fps: float = 30.0,
-        align_mode: str = "nearest",
+        pc_name: str = "strawberry.stl",
+        tactile_name: str = "tactile_log_20260104_172902.csv",
+        groups: Tuple[str, ...] = ("n2", "n5", "lh", "rh"),
+        missing_policy: str = "initial",  # {"initial","zero","nan"} for missing action files
+        initial_overrides: Optional[Dict[str, np.ndarray]] = None,
+
+        # Tactile shaping (default matches tactile_stream.py: 5 channels, 12*8 points)
+        tactile_channels: int = 5,
+        tactile_points: int = 96,
+        tactile_missing_fill: float = 0.0,  # if tactile file missing/unreadable
+        tactile_preload: bool = False,       # preload all tactile logs into RAM
+
+        # Point cloud shaping:
+        to_tensor: bool = True,
+        pc_transform: Optional[Callable[[np.ndarray], Any]] = None,
         num_points: Optional[int] = None,
         sampling: str = "random",
         features: Tuple[str, ...] = ("xyz",),
-        resample_if_len_mismatch: bool = True,
 
-        # tactile config
-        tactile_root: Optional[Union[str, Path]] = None,
-        tactile_subdir: Optional[str] = None,        # if tactile frames live under <episode>/<subdir>/
-        tactile_glob: str = "*.png",
-        tactile_channels: int = 1,
-        tactile_rgb_pseudo: bool = True,
-        tactile_rgb_method: str = "rb_ratio",
-        tactile_norm_mode: str = "percentile",
-        tactile_p_low: float = 2.0,
-        tactile_p_high: float = 98.0,
-        tactile_fixed_range: Optional[Tuple[float, float]] = None,
-        tactile_assume_srgb: bool = True,
-        tactile_nearest_chunk: int = 200_000,
-
-        # what to do if tactile missing in some episode
-        require_tactile: bool = True,
-        missing_tactile_policy: str = "zero",  # "zero" or "nan"
+        include_episodes: Optional[List[str]] = None,
+        seed: int = 0,
     ):
         super().__init__()
+        self.obs_root = Path(obs_root).expanduser()
+        self.tactile_root = Path(tactile_root).expanduser()
+        self.act_root = Path(act_root).expanduser()
 
-        # --- base dataset: point cloud + RH actions ---
-        self.base = RightHandPointCloudActionDataset(
-            obs_root=str(obs_root),
-            act_root=str(act_root),
-            pc_glob=pc_glob,
-            default_fps=default_fps,
-            align_mode=align_mode,
-            num_points=num_points,
-            sampling=sampling,
-            features=features,
-            resample_if_len_mismatch=resample_if_len_mismatch,
-        )
+        self.pc_name = pc_name
+        self.tactile_name = tactile_name
+        self.groups = tuple(groups)
+        self.missing_policy = str(missing_policy)
+        self.include_episodes = include_episodes
 
-        self.default_fps = float(default_fps)
-
-        # tactile configuration
         self.tactile_channels = int(tactile_channels)
-        self.tactile_rgb_pseudo = bool(tactile_rgb_pseudo)
-        self.tactile_rgb_method = str(tactile_rgb_method)
-        self.tactile_norm_mode = str(tactile_norm_mode)
-        self.tactile_p_low = float(tactile_p_low)
-        self.tactile_p_high = float(tactile_p_high)
-        self.tactile_fixed_range = tactile_fixed_range
-        self.tactile_assume_srgb = bool(tactile_assume_srgb)
-        self.tactile_nearest_chunk = int(tactile_nearest_chunk)
+        self.tactile_points = int(tactile_points)
+        self.tactile_missing_fill = float(tactile_missing_fill)
+        self.tactile_preload = bool(tactile_preload)
 
-        self.require_tactile = bool(require_tactile)
-        self.missing_tactile_policy = str(missing_tactile_policy)
+        self.to_tensor = bool(to_tensor)
+        self.pc_transform = pc_transform
+        self.num_points = num_points
+        self.sampling = sampling
+        self.features = tuple(features)
 
-        # tactile root resolution
-        self.tactile_root = Path(tactile_root).expanduser() if tactile_root is not None else None
-        self.tactile_subdir = tactile_subdir
-        self.tactile_glob = tactile_glob
+        self._rng = np.random.default_rng(int(seed))
 
-        # We reuse the timestamp helper from the base module:
-        # your earlier module had `_timestamp_from_name(p: Path) -> Optional[float]`
-        try:
-            timestamp_fn = _timestamp_from_name  # type: ignore[name-defined]
-        except NameError:
-            raise RuntimeError(
-                "This add-on expects the earlier point-cloud module to define `_timestamp_from_name(Path)`."
+        # Expected dims / initials
+        self.expected_dims = dict(EXPECTED_DIMS_ALL)
+        self.initials = {k: DEFAULT_INITIALS_ALL[k].copy() for k in DEFAULT_INITIALS_ALL}
+        if initial_overrides:
+            for k, v in initial_overrides.items():
+                v = np.asarray(v, dtype=np.float64).reshape(-1)
+                exp = self.expected_dims.get(k)
+                if exp is None:
+                    continue
+                if v.shape[0] != exp:
+                    raise ValueError(f"initial_overrides['{k}'] must have length {exp}, got {v.shape[0]}")
+                self.initials[k] = v
+
+        if not self.obs_root.is_dir():
+            raise NotADirectoryError(f"obs_root must be a directory: {self.obs_root}")
+
+        # Discover episodes: obs_root/*/pc_name
+        episodes: List[EpisodeOnePC] = []
+
+        # Case A: obs_root itself is an episode folder
+        pc_here = self.obs_root / self.pc_name
+        if pc_here.exists():
+            ep_id = self.obs_root.name
+            if self.include_episodes and ep_id not in self.include_episodes:
+                raise FileNotFoundError(f"Requested episode '{ep_id}' not in include_episodes.")
+
+            act_dir = _discover_action_dir(
+                self.act_root, ep_id,
+                expected_files=("nova2.txt", "nova5.txt", "left.txt", "right.txt")
             )
+            if act_dir is None:
+                raise FileNotFoundError(f"Could not find action files for episode '{ep_id}' under '{self.act_root}'")
 
-        # --- Build tactile index per episode ---
-        self._tactile_ep: List[_TactileEpisodeIndex] = []
+            tactile_path = (self.tactile_root / ep_id / self.tactile_name)
+            if not tactile_path.exists():
+                tactile_path = None
 
-        # Pre-infer a fill shape by looking at the first tactile file found (for missing episodes)
-        self._fill_hw: Optional[Tuple[int, int]] = None
-
-        for ep in self.base.episodes:
-            # Resolve tactile episode directory
-            if self.tactile_root is None:
-                # tactile frames live alongside point cloud frames by default
-                tactile_dir = ep.obs_dir
-            else:
-                cand = self.tactile_root / ep.episode_id
-                tactile_dir = cand if cand.is_dir() else self.tactile_root
-
-            if self.tactile_subdir:
-                tactile_dir = tactile_dir / self.tactile_subdir
-
-            tactile_paths = _list_tactile_sorted(tactile_dir, self.tactile_glob)
-
-            if (not tactile_paths) and self.require_tactile:
-                raise FileNotFoundError(
-                    f"No tactile frames found for episode '{ep.episode_id}' under: {tactile_dir} (glob='{self.tactile_glob}')"
-                )
-
-            # Timebases
-            t_tactile, tactile_has_ts = _build_timebase_from_names_or_fps(
-                tactile_paths, self.default_fps, timestamp_fn=timestamp_fn
-            )
-            t_pc = ep.t_frame
-            pc_has_ts = True  # base always returns a timebase (may be fps-based); we treat that as usable
-
-            # Build mapping from PC frame index -> tactile frame index
-            if len(tactile_paths) == 0:
-                idx_map = np.full((len(t_pc),), -1, dtype=np.int64)
-            else:
-                if tactile_has_ts and pc_has_ts:
-                    # nearest by time
-                    idx_map = _nearest_index_map(t_pc, t_tactile)
-                else:
-                    # fallback: index-based mapping
-                    if len(tactile_paths) == len(t_pc):
-                        idx_map = np.arange(len(t_pc), dtype=np.int64)
-                    else:
-                        idx_map = np.round(
-                            np.linspace(0, len(tactile_paths) - 1, num=len(t_pc), endpoint=True)
-                        ).astype(np.int64)
-
-            self._tactile_ep.append(_TactileEpisodeIndex(
-                tactile_dir=tactile_dir,
-                tactile_paths=tactile_paths,
-                t_tactile=t_tactile,
-                idx_map=idx_map,
-                have_ts=bool(tactile_has_ts),
+            actions_raw = _load_actions_dir(act_dir)
+            episodes.append(EpisodeOnePC(
+                episode_id=ep_id, obs_dir=self.obs_root, pc_path=pc_here,
+                act_dir=act_dir, tactile_path=tactile_path, actions_raw=actions_raw
             ))
 
-            # Infer fill H,W
-            if self._fill_hw is None and tactile_paths:
-                tac0, _info0 = load_tactile_tensor(
-                    tactile_paths[0],
-                    channels=self.tactile_channels,
-                    rgb_pseudo=self.tactile_rgb_pseudo,
-                    rgb_method=self.tactile_rgb_method,
-                    assume_srgb=self.tactile_assume_srgb,
-                    nearest_chunk=self.tactile_nearest_chunk,
-                    norm_mode=self.tactile_norm_mode,
-                    p_low=self.tactile_p_low,
-                    p_high=self.tactile_p_high,
-                    fixed_range=self.tactile_fixed_range,
-                    global_range=None,
-                )
-                _, H, W = tac0.shape
-                self._fill_hw = (H, W)
+        else:
+            # Case B: obs_root is a parent directory containing episode subfolders
+            subdirs = sorted([p for p in self.obs_root.iterdir() if p.is_dir()])
+            for ep_dir in subdirs:
+                ep_id = ep_dir.name
+                if self.include_episodes and ep_id not in self.include_episodes:
+                    continue
 
-        if (not self.require_tactile) and self._fill_hw is None:
-            # If tactile missing everywhere, still define something safe
-            self._fill_hw = (1, 1)
+                pc_path = ep_dir / self.pc_name
+                if not pc_path.exists():
+                    # fallback: if user didn't name it point.ply, pick first ply/pcd-like file
+                    candidates = sorted(ep_dir.glob("*.ply")) + sorted(ep_dir.glob("*.pcd"))
+                    if not candidates:
+                        continue
+                    pc_path = candidates[0]
+
+                act_dir = _discover_action_dir(
+                    self.act_root, ep_id,
+                    expected_files=("nova2.txt", "nova5.txt", "left.txt", "right.txt")
+                )
+                if act_dir is None:
+                    raise FileNotFoundError(f"Could not find action files for episode '{ep_id}' under '{self.act_root}'")
+
+                tactile_path = (self.tactile_root / ep_id / self.tactile_name)
+                if not tactile_path.exists():
+                    tactile_path = None
+
+                actions_raw = _load_actions_dir(act_dir)
+
+                episodes.append(EpisodeOnePC(
+                    episode_id=ep_id, obs_dir=ep_dir, pc_path=pc_path,
+                    act_dir=act_dir, tactile_path=tactile_path, actions_raw=actions_raw
+                ))
+
+        if not episodes:
+            raise FileNotFoundError(f"No episodes found under {self.obs_root} with pc_name='{self.pc_name}'")
+
+        self.episodes = episodes
+
+        # Optional tactile preload + cache
+        self._tactile_cache: Dict[int, TactileLog] = {}
+        if self.tactile_preload:
+            for i in range(len(self.episodes)):
+                _ = self._get_tactile(i)
 
     def __len__(self) -> int:
-        return len(self.base)
+        return len(self.episodes)
+
+    def _get_tactile(self, idx: int) -> TactileLog:
+        if idx in self._tactile_cache:
+            return self._tactile_cache[idx]
+
+        ep = self.episodes[idx]
+        if ep.tactile_path is None:
+            # missing tactile -> length 1 filler
+            t = np.array([0.0], dtype=np.float64)
+            data = np.full((1, self.tactile_channels, self.tactile_points),
+                           self.tactile_missing_fill, dtype=np.float32)
+            tl = TactileLog(t_sec=t, data=data, channels=self.tactile_channels, points=self.tactile_points,
+                            rows=None, cols=None, header_style="missing")
+            self._tactile_cache[idx] = tl
+            return tl
+
+        try:
+            tl = load_tactile_log(ep.tactile_path)
+            # enforce shape
+            tl_data = _pad_or_trim_tactile(tl.data, self.tactile_channels, self.tactile_points,
+                                           fill=self.tactile_missing_fill)
+            tl = TactileLog(
+                t_sec=tl.t_sec,
+                data=tl_data,
+                channels=self.tactile_channels,
+                points=self.tactile_points,
+                rows=tl.rows,
+                cols=tl.cols,
+                header_style=tl.header_style,
+            )
+        except Exception:
+            t = np.array([0.0], dtype=np.float64)
+            data = np.full((1, self.tactile_channels, self.tactile_points),
+                           self.tactile_missing_fill, dtype=np.float32)
+            tl = TactileLog(t_sec=t, data=data, channels=self.tactile_channels, points=self.tactile_points,
+                            rows=None, cols=None, header_style="unreadable")
+
+        self._tactile_cache[idx] = tl
+        return tl
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        sample = self.base[idx]  # includes point_cloud, actions{'rh'}, t_frame, meta
+        ep = self.episodes[idx]
 
-        # Locate episode/frame index
-        ep_idx, frame_i = self.base._global_to_local[idx]  # uses base internal mapping
-        te = self._tactile_ep[ep_idx]
-        j = int(te.idx_map[frame_i])
+        # ---- point cloud ----
+        pts, cols, nors = _read_point_cloud_open3d(ep.pc_path)
 
-        if j < 0 or j >= len(te.tactile_paths):
-            # Missing tactile frame: fill tensor
-            H, W = self._fill_hw if self._fill_hw is not None else (1, 1)
-            if self.missing_tactile_policy == "zero":
-                tactile = torch.zeros((self.tactile_channels, H, W), dtype=torch.float32)
-            elif self.missing_tactile_policy == "nan":
-                tactile = torch.full((self.tactile_channels, H, W), float("nan"), dtype=torch.float32)
-            else:
-                raise ValueError("missing_tactile_policy must be 'zero' or 'nan'")
-            tactile_path = None
-            tac_info: Dict[str, Any] = {}
-        else:
-            tactile_path = te.tactile_paths[j]
-            tactile, tac_info = load_tactile_tensor(
-                tactile_path,
-                channels=self.tactile_channels,
-                rgb_pseudo=self.tactile_rgb_pseudo,
-                rgb_method=self.tactile_rgb_method,
-                assume_srgb=self.tactile_assume_srgb,
-                nearest_chunk=self.tactile_nearest_chunk,
-                norm_mode=self.tactile_norm_mode,
-                p_low=self.tactile_p_low,
-                p_high=self.tactile_p_high,
-                fixed_range=self.tactile_fixed_range,
-                global_range=None,
+        if self.num_points is not None:
+            pts, cols, nors = _sample_or_pad(
+                pts, cols, nors,
+                num_points=int(self.num_points),
+                rng=self._rng,
+                method=self.sampling,
             )
 
-        # Attach tactile to sample
-        sample["tactile"] = tactile
+        feat = _pack_features(pts, cols, nors, self.features)  # (N,F)
 
-        # Expand meta
-        sample["meta"]["tactile_dir"] = str(te.tactile_dir)
-        sample["meta"]["tactile_path"] = str(tactile_path) if tactile_path is not None else None
-        sample["meta"]["tactile_lo"] = tac_info.get("lo", None)
-        sample["meta"]["tactile_hi"] = tac_info.get("hi", None)
-        sample["meta"]["tactile_rgb_pseudo"] = self.tactile_rgb_pseudo
-        sample["meta"]["tactile_rgb_method"] = self.tactile_rgb_method
+        if self.pc_transform is not None:
+            feat_out = self.pc_transform(feat)
+        else:
+            feat_out = feat
 
+        if self.to_tensor and isinstance(feat_out, np.ndarray):
+            pc_tensor = torch.from_numpy(feat_out).float()
+        else:
+            pc_tensor = feat_out
+
+        # ---- actions (raw sequences, per file) ----
+        action_seq: Dict[str, torch.Tensor] = {}
+        action_t: Dict[str, torch.Tensor] = {}
+
+        for k in self.groups:
+            expD = self.expected_dims.get(k)
+            if expD is None:
+                continue
+            init_vec = self.initials.get(k, np.zeros(expD, dtype=np.float64))
+
+            if k in ep.actions_raw:
+                t_src, q_src = ep.actions_raw[k]
+                q_src = _expand_or_trim_to_dim(q_src, expD, init_vec)
+                q_src = _fill_nans_with_init(q_src, init_vec)
+                # if empty, fallback to length 1
+                if q_src.shape[0] == 0:
+                    q_src = init_vec[None, :]
+                    t_src = np.array([0.0], dtype=np.float64)
+            else:
+                if self.missing_policy == "initial":
+                    q_src = init_vec[None, :]
+                elif self.missing_policy == "zero":
+                    q_src = np.zeros((1, expD), dtype=np.float64)
+                elif self.missing_policy == "nan":
+                    q_src = np.full((1, expD), np.nan, dtype=np.float64)
+                else:
+                    raise ValueError("missing_policy must be one of {'initial','zero','nan'}")
+                t_src = np.array([0.0], dtype=np.float64)
+
+            action_seq[k] = torch.from_numpy(np.asarray(q_src, dtype=np.float32))
+            action_t[k] = torch.from_numpy(np.asarray(t_src, dtype=np.float32))
+
+        # ---- tactile ----
+        tl = self._get_tactile(idx)
+        tactile_seq = torch.from_numpy(tl.data.astype(np.float32, copy=False))  # (T,C,P)
+        tactile_t = torch.from_numpy(tl.t_sec.astype(np.float32, copy=False))   # (T,)
+
+        sample: Dict[str, Any] = {
+            "point_cloud": pc_tensor,
+            "action_seq": action_seq,
+            "action_t": action_t,
+            "tactile_seq": tactile_seq,
+            "tactile_t": tactile_t,
+            "t_frame": 0.0,  # single observation point cloud
+            "meta": {
+                "episode_id": ep.episode_id,
+                "episode_idx": int(idx),
+                "pc_path": str(ep.pc_path),
+                "obs_dir": str(ep.obs_dir),
+                "act_dir": str(ep.act_dir),
+                "tactile_path": None if ep.tactile_path is None else str(ep.tactile_path),
+                "tactile_header_style": tl.header_style,
+                "tactile_channels": int(self.tactile_channels),
+                "tactile_points": int(self.tactile_points),
+            },
+        }
         return sample
 
 
-# -----------------------------------------------------------------------------
-# Example usage
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    from torch.utils.data import DataLoader
+# ============================================================
+# Collate: (B episodes) -> fixed chunk_len sequences
+#   - Resamples action_seq (per group) to chunk_len
+#   - Resamples tactile_seq to chunk_len
+# ============================================================
 
-    ds = RightHandPointCloudTactileActionDataset(
-        obs_root="path/to/pc_obs_root",
-        act_root="path/to/act_root",
-        pc_glob="*.ply",
-        num_points=2048,
-        features=("xyz",),
+def collate_pointcloud_to_action_chunk(
+    batch: List[Dict[str, Any]],
+    chunk_len: int = 64,
+    interp_mode_map: Optional[Dict[str, str]] = None,
+    prefer_action_seq_key: str = "action_seq",
+    tactile_key: str = "tactile_seq",
+) -> Dict[str, Any]:
+    """
+    Episode-level collate:
+      - Each item is ONE point cloud
+      - Each item provides an action SEQUENCE (variable length)
+      - Each item provides a tactile SEQUENCE (variable length)
+      - We interpolate/resample each sequence to fixed chunk_len
 
-        tactile_root="path/to/tactile_root",   # can be None if tactile is in same episode folder
-        tactile_subdir=None,                   # or "tactile" if frames are under <episode>/tactile/
-        tactile_glob="*.png",
-        tactile_channels=1,
-        tactile_rgb_pseudo=True,
-        tactile_rgb_method="rb_ratio",
-    )
+    Output:
+      {
+        "point_cloud": Tensor [B,N,F] or List[Tensor [Ni,F]],
+        "actions": {k: Tensor [B,chunk_len,Dk]},
+        "tactile": Tensor [B,chunk_len,C,P],
+        "t_frame": Tensor [B],
+        "meta": List[dict],
+        "action_seq_lens": {k: Tensor [B]},
+        "tactile_seq_lens": Tensor [B],
+      }
+    """
+    if len(batch) == 0:
+        raise ValueError("Empty batch for collate_pointcloud_to_action_chunk")
 
-    # IMPORTANT:
-    # - If you want *episode sequences*, you need an episode-aware sampler like you had before.
-    # - Otherwise (random frames), use a normal collate or keep batch as list.
-    dl = DataLoader(ds, batch_size=8, shuffle=True, num_workers=0, collate_fn=lambda x: x)
+    # --- point clouds ---
+    pcs = [b["point_cloud"] for b in batch]
+    if isinstance(pcs[0], torch.Tensor):
+        try:
+            pc_out: Union[torch.Tensor, List[torch.Tensor]] = torch.stack(pcs, dim=0)
+        except RuntimeError:
+            pc_out = pcs
+    else:
+        pc_out = pcs
 
-    batch = next(iter(dl))
-    print("Example keys:", batch[0].keys())
-    print("PC shape:", batch[0]["point_cloud"].shape)   # [N,F]
-    print("Tac shape:", batch[0]["tactile"].shape)      # [C,H,W]
-    print("RH action:", batch[0]["actions"]["rh"].shape)
+    # --- times + meta ---
+    t_frame = torch.tensor([float(b.get("t_frame", 0.0)) for b in batch], dtype=torch.float32)
+    meta = [b.get("meta", {}) for b in batch]
+
+    # Decide interpolation mode per action group
+    default_interp_mode_map = {"n2": "linear", "n5": "linear", "lh": "nearest", "rh": "nearest"}
+    interp_mode_map = {**default_interp_mode_map, **(interp_mode_map or {})}
+
+    # --- actions ---
+    all_keys = set()
+    for b in batch:
+        if prefer_action_seq_key in b and isinstance(b[prefer_action_seq_key], dict):
+            all_keys |= set(b[prefer_action_seq_key].keys())
+        if "actions" in b and isinstance(b["actions"], dict):
+            all_keys |= set(b["actions"].keys())
+
+    actions_out: Dict[str, torch.Tensor] = {}
+    seq_lens_out: Dict[str, torch.Tensor] = {}
+
+    for k in sorted(all_keys):
+        mode = interp_mode_map.get(k, "linear")
+        seqs_k: List[torch.Tensor] = []
+        lens_k: List[int] = []
+
+        ref_D: Optional[int] = None
+        for b in batch:
+            q = None
+            if prefer_action_seq_key in b and k in b[prefer_action_seq_key]:
+                q = b[prefer_action_seq_key][k]
+            elif "actions" in b and k in b["actions"]:
+                q = b["actions"][k]
+            if isinstance(q, torch.Tensor):
+                if q.ndim == 1:
+                    ref_D = int(q.shape[0])
+                elif q.ndim == 2:
+                    ref_D = int(q.shape[1])
+                break
+        if ref_D is None:
+            continue
+
+        for b in batch:
+            if prefer_action_seq_key in b and k in b[prefer_action_seq_key]:
+                q = b[prefer_action_seq_key][k]
+            elif "actions" in b and k in b["actions"]:
+                q1 = b["actions"][k]
+                q = q1.unsqueeze(0) if q1.ndim == 1 else q1
+            else:
+                q = torch.full((1, ref_D), float("nan"), dtype=torch.float32)
+
+            if q.ndim == 1:
+                q = q.unsqueeze(0)
+            if q.ndim != 2:
+                raise ValueError(f"Bad action tensor for key={k}: shape={tuple(q.shape)}")
+
+            L = int(q.shape[0])
+            lens_k.append(L)
+            q_rs = _interp_seq_torch(q, target_len=chunk_len, mode=mode)
+            seqs_k.append(q_rs)
+
+        actions_out[k] = torch.stack(seqs_k, dim=0)  # [B,chunk_len,D]
+        seq_lens_out[k] = torch.tensor(lens_k, dtype=torch.int64)
+
+    # --- tactile ---
+    tactile_out = None
+    tactile_lens: List[int] = []
+
+    # Find reference C,P
+    ref_C = None
+    ref_P = None
+    for b in batch:
+        ts = b.get(tactile_key, None)
+        if isinstance(ts, torch.Tensor) and ts.ndim == 3:
+            ref_C = int(ts.shape[1])
+            ref_P = int(ts.shape[2])
+            break
+
+    if ref_C is not None and ref_P is not None:
+        tac_rs_list: List[torch.Tensor] = []
+        for b in batch:
+            ts = b.get(tactile_key, None)
+            if not isinstance(ts, torch.Tensor):
+                ts = torch.full((1, ref_C, ref_P), float("nan"), dtype=torch.float32)
+
+            if ts.ndim != 3:
+                raise ValueError(f"{tactile_key} must be Tensor [T,C,P], got {tuple(ts.shape)}")
+
+            Lt = int(ts.shape[0])
+            tactile_lens.append(Lt)
+
+            # flatten -> interpolate -> unflatten
+            flat = ts.reshape(Lt, ref_C * ref_P)
+            flat_rs = _interp_seq_torch(flat, target_len=chunk_len, mode="linear")
+            tac_rs = flat_rs.reshape(chunk_len, ref_C, ref_P)
+            tac_rs_list.append(tac_rs)
+
+        tactile_out = torch.stack(tac_rs_list, dim=0)  # [B,chunk_len,C,P]
+
+    out = {
+        "point_cloud": pc_out,
+        "actions": actions_out,
+        "t_frame": t_frame,
+        "meta": meta,
+        "action_seq_lens": seq_lens_out,
+    }
+    if tactile_out is not None:
+        out["tactile"] = tactile_out
+        out["tactile_seq_lens"] = torch.tensor(tactile_lens, dtype=torch.int64)
+    return out
