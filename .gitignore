@@ -149,7 +149,8 @@ generated*
 
 *.mp4
 
-*.txt
+wandb_run_id.txt
+*].txt
 
 *.zip
 
