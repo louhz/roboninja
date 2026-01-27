@@ -138,43 +138,78 @@ def set_group_gains(entity, dof_idx, kp, kv_scale=2.0, kp_scale=1.0):
     entity.set_dofs_kp(kp_eff.astype(np.float32), dofs_idx_local=dof_idx)
     entity.set_dofs_kv(kv_eff.astype(np.float32), dofs_idx_local=dof_idx)
 
-def load_ros_txt_positions(txt_path, key="position"):
+
+
+def load_txt_joint_matrix(txt_path: str) -> np.ndarray:
     """
-    Parse ROS-like text:
-      seq: N
-      secs: <int>
-      nsecs: <int>
-      position: [ ... ]
+    Load a plain joint-angle matrix from txt.
+
+    Supported formats:
+      A) Python/JSON-like list:
+         [[...], [...], ...]
+      B) One frame per line:
+         0.1 0.2 0.3 ...
+         0.1,0.2,0.3,...
+         [0.1, 0.2, 0.3, ...]
     Returns:
-      t: (N,) seconds, relative to first sample
-      q: (N, D) positions (float64)
+      q: (N, D) float64
     """
-    t_list, q_list = [], []
-    secs, nsecs = None, None
-    with open(txt_path, "r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if s.startswith("secs:"):
-                try: secs = int(s.split(":", 1)[1].strip())
-                except: secs = None
-            elif s.startswith("nsecs:"):
-                try: nsecs = int(s.split(":", 1)[1].strip())
-                except: nsecs = 0
-            elif s.startswith(f"{key}:"):
-                arr = ast.literal_eval(s.split(":", 1)[1].strip())
-                q_list.append(np.asarray(arr, dtype=np.float64))
-                if secs is not None:
-                    t_list.append(float(secs) + float(nsecs or 0) * 1e-9)
-                else:
-                    t_list.append(len(t_list) * 1.0)
-    if not q_list:
-        raise RuntimeError(f"No '{key}:' entries found in {txt_path}")
-    t = np.asarray(t_list, dtype=np.float64)
-    q = np.vstack(q_list)
-    # relative time & de-duplicate timestamps
-    t -= t[0]
-    uniq, idx = np.unique(t, return_index=True)
-    return uniq, q[idx]
+    text = Path(txt_path).read_text(encoding="utf-8").strip()
+    if not text:
+        raise RuntimeError(f"Empty file: {txt_path}")
+
+    # Try literal_eval first (handles [[...],[...]] nicely)
+    try:
+        obj = ast.literal_eval(text)
+        q = np.asarray(obj, dtype=np.float64)
+        if q.ndim == 1:
+            q = q[None, :]
+        if q.ndim != 2:
+            raise ValueError("Parsed object is not 2D")
+        return q
+    except Exception:
+        # Fallback: parse per-line numeric data
+        rows = []
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            line = line.strip().strip("[](){}")
+            # allow commas or spaces
+            row = np.fromstring(line.replace(",", " "), sep=" ", dtype=np.float64)
+            if row.size == 0:
+                continue
+            rows.append(row)
+
+        if not rows:
+            raise RuntimeError(f"Could not parse any numeric rows from: {txt_path}")
+
+        D0 = rows[0].size
+        if any(r.size != D0 for r in rows):
+            raise RuntimeError(
+                f"Inconsistent column counts in {txt_path}: "
+                f"first row has {D0}, but found {[r.size for r in rows]}"
+            )
+
+        return np.vstack(rows)
+
+
+def load_inference_angles(txt_path: str, duration_sec: float = 2.0):
+    """
+    Load inference result that has only joint angles (N frames), synthesize time t.
+
+    duration_sec: how long the whole sequence should represent in *source time*.
+                 (If you don't care, keep 2.0; change to match your model.)
+    """
+    q = load_txt_joint_matrix(txt_path)  # (N, D)
+    N = q.shape[0]
+    if N < 2:
+        t = np.zeros((N,), dtype=np.float64)
+    else:
+        dt = float(duration_sec) / float(N - 1)
+        t = np.arange(N, dtype=np.float64) * dt
+    return t, q
+
 
 def maybe_to_rad(q, assume_degrees=True):
     return np.deg2rad(q).astype(q.dtype, copy=False) if assume_degrees else q
@@ -403,15 +438,24 @@ if __name__ == "__main__":
             print(f"[Skip] {key}: file not found -> {path}")
             continue
         # 返回时间步和运动序列
-        t_src, q_src = load_ros_txt_positions(path)
+        INFER_DURATION_SEC = 2.0  # <<< set this to what your model output represents
 
-        # --- MODIFIED: Use new processing for hands, old for arms ---
-        if key == 'lh':
-            q_src = process_hand_data(q_src, LEFT_HAND_PARAMS, 'L')
-        elif key == 'rh':
-            q_src = process_hand_data(q_src, RIGHT_HAND_PARAMS, 'R')
-        else: # For arms 'n2' and 'n5'
+        t_src, q_src = load_inference_angles(path, duration_sec=INFER_DURATION_SEC)
+
+        # Units handling:
+        # - If your inference outputs radians already: set these False
+        ARM_INPUT_IN_DEGREES  = False
+        HAND_INPUT_IN_DEGREES = False
+
+        if key in ("n2", "n5"):
             q_src = maybe_to_rad(q_src, assume_degrees=ARM_INPUT_IN_DEGREES)
+        elif key in ("lh", "rh"):
+            if HAND_INPUT_IN_DEGREES:
+                q_src = np.deg2rad(q_src)
+            # if it's already (N,20) rad, do nothing
+
+        loaded[key] = (t_src, q_src)
+        print(f"[Load] {key}: {len(t_src)} samples, {q_src.shape[1]} DoFs, duration={t_src[-1]:.3f}s from {path}")
 
         loaded[key] = (t_src, q_src)
         print(f"[Load] {key}: {len(t_src)} samples, {q_src.shape[1]} DoFs, duration={t_src[-1]:.3f}s from {path}")
@@ -521,10 +565,11 @@ if __name__ == "__main__":
 
         for _ in range(steps_per_cmd):
             scene.step()
-            cam.render()
+
+        cam.render()  # record exactly ONE frame per i
 
     for _ in range(int(TAIL_SECONDS / DT_SIMUL)):
         scene.step(); cam.render()
 
-    cam.stop_recording(save_to_filename=str(video_out), fps=int(round(1.0 / DT_SIMUL)))
+    cam.stop_recording(save_to_filename=str(video_out), fps=int(round(1.0 / DT_CMD)))
     print(f"\n[OK] Saved video to: {video_out.resolve()}")

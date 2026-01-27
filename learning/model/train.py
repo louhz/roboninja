@@ -1,4 +1,5 @@
-# train_pointcloud_action_wandb.py
+# train_pointcloud_action_wandb.py (REVISED)
+
 import os
 import re
 import sys
@@ -48,7 +49,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------
-# Utilities (unchanged)
+# Utilities
 # ---------------------------------------------------------------------
 def seed_everything(seed: int):
     import random
@@ -110,15 +111,58 @@ def pad_stack_pointcloud_if_needed(
     return pc_out, mask
 
 
+def _move_optimizer_state_to_device(opt: torch.optim.Optimizer, device: torch.device) -> None:
+    """Move optimizer state tensors to the same device as model params (important for resume)."""
+    for state in opt.state.values():
+        for k, v in list(state.items()):
+            if torch.is_tensor(v):
+                state[k] = v.to(device, non_blocking=True)
+
+
+def _infer_optimizer_step(opt: torch.optim.Optimizer) -> Optional[int]:
+    """
+    Adam/AdamW keeps a per-parameter 'step' counter.
+    After N optimizer updates, this is typically N (as a tensor( N. )).
+    This is the cleanest way to infer the correct next global_step on resume.
+    """
+    for state in opt.state.values():
+        if "step" in state:
+            s = state["step"]
+            try:
+                if torch.is_tensor(s):
+                    return int(s.item())
+                return int(s)
+            except Exception:
+                return None
+    return None
+
+
 def save_ckpt(path: str, model, opt, step: int, meta: Dict[str, Any]):
+    """
+    Here, 'step' is the *last executed step index* (what your loop calls global_step at save-time).
+    We also store 'next_step' for robust resume.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(
-        {"step": step, "model": model.state_dict(), "opt": opt.state_dict(), "meta": meta},
+        {
+            "step": int(step),
+            "next_step": int(step + 1),
+            "model": model.state_dict(),
+            "opt": opt.state_dict(),
+            "meta": meta,
+        },
         path,
     )
 
 
-def try_load_latest_ckpt(save_dir: str, model, opt) -> int:
+def try_load_latest_ckpt(save_dir: str, model, opt, device: torch.device) -> int:
+    """
+    Returns the correct *next* global_step to run.
+    Fixes:
+      - off-by-one resume (repeating last step)
+      - optimizer state device mismatch (CPU vs CUDA)
+      - handles your older ckpts + the special final ckpt that stored step differently
+    """
     if not os.path.isdir(save_dir):
         return 0
 
@@ -132,51 +176,72 @@ def try_load_latest_ckpt(save_dir: str, model, opt) -> int:
         return 0
 
     candidates.sort(key=lambda x: x[0])
-    step, path = candidates[-1]
+    _, path = candidates[-1]
 
     data = torch.load(path, map_location="cpu")
     model.load_state_dict(data["model"])
     opt.load_state_dict(data["opt"])
-    return int(data.get("step", step))
+
+    # Infer the correct next step from optimizer state if possible (most reliable).
+    opt_step = _infer_optimizer_step(opt)
+
+    # Move optimizer tensors to the target device (critical when resuming on CUDA).
+    _move_optimizer_state_to_device(opt, device)
+
+    # Prefer optimizer-derived step. Fallbacks if optimizer state is empty.
+    if opt_step is not None:
+        return int(opt_step)
+
+    # Newer ckpts: prefer next_step if present.
+    if "next_step" in data:
+        return int(data["next_step"])
+
+    # Old fallback: step was last executed index -> next is +1
+    ckpt_step = int(data.get("step", 0))
+    return ckpt_step + 1
+
+
+def _resolve_run_id_file(cfg: "TrainConfig") -> str:
+    """
+    Store run_id_file inside save_dir when a relative path is given.
+    This prevents accidentally reusing ./wandb_run_id.txt across different runs.
+    """
+    if cfg.run_id_file is None or str(cfg.run_id_file).strip() == "":
+        return os.path.join(cfg.save_dir, "wandb_run_id.txt")
+    if os.path.isabs(cfg.run_id_file):
+        return cfg.run_id_file
+    return os.path.join(cfg.save_dir, os.path.basename(cfg.run_id_file))
 
 
 # ---------------------------------------------------------------------
-# Config (UPDATED FOR NEW DATASET)
+# Config
 # ---------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    # NEW DATASET ROOT (contains episodes_1 ... episodes_20)
     base_path: str = "./example_dataset/strawberry_real"
 
-    # NEW LAYOUT
     mesh_subdir: str = "mesh"
     mesh_name: str = "strawberry.stl"
     control_subdir: str = "control"
 
-    # mesh->point conversion knobs (only used when reading .stl)
     mesh_sampling: str = "surface"   # "surface" | "vertices"
     mesh_points: int = 8192
 
-    # point cloud shaping
     num_points: Optional[int] = 4096
     sampling: str = "random"  # "random" or "first"
     features: Tuple[str, ...] = ("xyz",)
 
-    # cache
     cache_point_cloud: bool = True
     pc_cache_max_items: int = 0
 
-    # action heads
     head_names: Tuple[str, str, str, str] = ("n2", "n5", "lh", "rh")
     groups: Tuple[str, ...] = ("n2", "n5", "lh", "rh")
     missing_policy: str = "initial"
 
-    # action resampling (fixed length per episode)
     action_len: int = 64
     interp_mode_map: Optional[Dict[str, str]] = None
-    action_format: str = "dict"  # keep "dict" for this script
+    action_format: str = "dict"
 
-    # loader
     batch_size: int = 8
     num_workers: int = 8
     shuffle: bool = True
@@ -185,24 +250,25 @@ class TrainConfig:
     pin_memory: bool = True
     prefetch_factor: int = 2
 
-    # model dims
-    joint_dim: int = 1  # dummy zeros
+    joint_dim: int = 1
     latent_dim: int = 512
     trunk_dropout: float = 0.1
 
-    # optimization
     lr: float = 3e-4
     weight_decay: float = 1e-2
     grad_clip_norm: float = 1.0
-    max_steps: int = 20000
+    max_steps: int = 2000
     log_every: int = 20
     ckpt_every: int = 1000
 
-    # loss
-    loss_type: str = "mse"
+    loss_type: str = "rmse"
+    loss_normalize: str = "per_dim_rms"
+    loss_eps: float = 1e-6
+    loss_min_scale: float = 1e-3
+    loss_huber_beta: float = 1.0
+    loss_detach_scale: bool = True
     head_weights: Tuple[float, ...] = (1.0,)
 
-    # wandb
     wandb_project: str = "pointcloud-action"
     wandb_run_name: Optional[str] = None
     wandb_entity: Optional[str] = None
@@ -210,14 +276,13 @@ class TrainConfig:
     resume: bool = True
     run_id_file: str = "./wandb_run_id.txt"
 
-    # misc
     device: str = "cuda"
     seed: int = 0
-    save_dir: str = "./checkpoints"
+    save_dir: str = "./checkpoints_new"
 
 
 # ---------------------------------------------------------------------
-# Build model + loss from first batch (unchanged)
+# Build model + loss from first batch
 # ---------------------------------------------------------------------
 @torch.no_grad()
 def build_model_and_loss(cfg: TrainConfig, first_batch: Dict[str, Any], device: torch.device):
@@ -284,7 +349,20 @@ def build_model_and_loss(cfg: TrainConfig, first_batch: Dict[str, Any], device: 
         head_names=cfg.head_names,
         active_groups=cfg.groups,
     )
-    loss_cfg = MultiHeadLossConfig(loss_type=str(cfg.loss_type), weights=weights_used)
+
+    try:
+        loss_cfg = MultiHeadLossConfig(
+            loss_type=str(cfg.loss_type),
+            normalize=str(cfg.loss_normalize),
+            weights=weights_used,
+            eps=float(cfg.loss_eps),
+            min_scale=float(cfg.loss_min_scale),
+            huber_beta=float(cfg.loss_huber_beta),
+            detach_scale=bool(cfg.loss_detach_scale),
+        )
+    except TypeError:
+        loss_cfg = MultiHeadLossConfig(loss_type=str(cfg.loss_type), weights=weights_used)
+
     loss_fn = MultiHeadLoss(head_names=list(cfg.head_names), cfg=loss_cfg).to(device)
 
     meta = {
@@ -306,6 +384,12 @@ def build_model_and_loss(cfg: TrainConfig, first_batch: Dict[str, Any], device: 
         "mesh_name": cfg.mesh_name,
         "mesh_subdir": cfg.mesh_subdir,
         "control_subdir": cfg.control_subdir,
+        "loss_type": cfg.loss_type,
+        "loss_normalize": cfg.loss_normalize,
+        "loss_eps": cfg.loss_eps,
+        "loss_min_scale": cfg.loss_min_scale,
+        "loss_huber_beta": cfg.loss_huber_beta,
+        "loss_detach_scale": cfg.loss_detach_scale,
     }
     return model, loss_fn, meta
 
@@ -338,7 +422,7 @@ def flatten_targets(
                 raise ValueError(f"actions['{hn}'] has T={x.shape[1]} but action_len={T}")
             if int(x.shape[2]) != int(d_step):
                 raise ValueError(f"actions['{hn}'] has D={x.shape[2]} but expected {d_step}")
-            targets[hn] = x.reshape(B, T * int(d_step)).to(device, non_blocking=True)
+            targets[hn] = x.reshape(B, T * int(d_step)).to(device, dtype=torch.float32, non_blocking=True)
         else:
             targets[hn] = torch.zeros((B, T * int(d_step)), device=device, dtype=torch.float32)
 
@@ -346,7 +430,7 @@ def flatten_targets(
 
 
 # ---------------------------------------------------------------------
-# train_one_epoch (unchanged)
+# train_one_epoch
 # ---------------------------------------------------------------------
 def train_one_epoch(
     *,
@@ -380,7 +464,7 @@ def train_one_epoch(
 
         pc_raw = batch["point_cloud"]
         pc, point_mask = pad_stack_pointcloud_if_needed(pc_raw)
-        pc = pc.to(device, non_blocking=True)
+        pc = pc.to(device, dtype=torch.float32, non_blocking=True)
         point_mask = point_mask.to(device, non_blocking=True) if point_mask is not None else None
         B = int(pc.shape[0])
 
@@ -429,6 +513,8 @@ def train_one_epoch(
                 "data/point_dim": int(pc.shape[-1]),
                 "data/num_points": int(pc.shape[1]),
                 "data/action_len": int(cfg.action_len),
+                "loss/type": str(cfg.loss_type),
+                "loss/normalize": str(cfg.loss_normalize),
             }
             for i, hn in enumerate(head_names):
                 log_dict[f"train/loss_{hn}"] = float(loss_by_head[hn].detach().cpu())
@@ -439,14 +525,15 @@ def train_one_epoch(
                 if "episode_id" in meta_list[0]:
                     log_dict["data/example_episode_id"] = meta_list[0]["episode_id"]
 
-            wandb.log(log_dict, step=global_step)
+            if wandb.run is not None:
+                wandb.log(log_dict)
 
         if cfg.ckpt_every and cfg.ckpt_every > 0 and (global_step > 0) and (global_step % cfg.ckpt_every == 0):
             ckpt_path = os.path.join(cfg.save_dir, f"ckpt_step_{global_step}.pt")
             save_ckpt(ckpt_path, model, opt, step=global_step, meta=meta)
 
             if wandb.run is not None:
-                art = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model")
+                art = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model", metadata={"step": global_step})
                 art.add_file(ckpt_path)
                 wandb.log_artifact(art)
 
@@ -467,7 +554,7 @@ def train_one_epoch(
 
 
 # ---------------------------------------------------------------------
-# Main (UPDATED DATASET INIT)
+# Main
 # ---------------------------------------------------------------------
 def main(cfg: TrainConfig):
     seed_everything(cfg.seed)
@@ -475,21 +562,19 @@ def main(cfg: TrainConfig):
     device = torch.device(cfg.device if (cfg.device == "cpu" or torch.cuda.is_available()) else "cpu")
     os.makedirs(cfg.save_dir, exist_ok=True)
 
-    # NEW: one root, episodes contain mesh/ + control/
+    run_id_path = _resolve_run_id_file(cfg)
+
     ds = PointCloudActionEpisodeDataset(
         obs_root=cfg.base_path,
-        act_root=None,  # IMPORTANT: actions are inside each episode now
+        act_root=None,
 
-        # NEW layout
         mesh_subdir=cfg.mesh_subdir,
         mesh_name=cfg.mesh_name,
         control_subdir=cfg.control_subdir,
 
-        # mesh -> points knobs
         mesh_sampling=cfg.mesh_sampling,
         mesh_points=cfg.mesh_points,
 
-        # existing knobs
         groups=cfg.groups,
         missing_policy=cfg.missing_policy,
         action_len=cfg.action_len,
@@ -503,28 +588,34 @@ def main(cfg: TrainConfig):
         pc_cache_max_items=cfg.pc_cache_max_items,
     )
 
-    loader = DataLoader(
-        ds,
+    dl_kwargs = dict(
+        dataset=ds,
         batch_size=cfg.batch_size,
         shuffle=cfg.shuffle,
         num_workers=cfg.num_workers,
         drop_last=cfg.drop_last,
-        pin_memory=(cfg.pin_memory and cfg.device.startswith("cuda")),
+        pin_memory=(cfg.pin_memory and str(device).startswith("cuda")),
         persistent_workers=(cfg.persistent_workers and cfg.num_workers > 0),
-        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
+    if cfg.num_workers > 0:
+        dl_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
+
+    loader = DataLoader(**dl_kwargs)
 
     first_batch = next(iter(loader))
     model, loss_fn, meta = build_model_and_loss(cfg, first_batch, device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    start_step = try_load_latest_ckpt(cfg.save_dir, model, opt) if cfg.resume else 0
+
+    # Resume training state (FIXED: returns correct next step and moves optimizer state to device)
+    start_step = try_load_latest_ckpt(cfg.save_dir, model, opt, device) if cfg.resume else 0
     global_step = int(start_step)
 
+    # Resume W&B run id (safer path)
     run_id = None
-    if cfg.resume and os.path.exists(cfg.run_id_file):
+    if cfg.resume and os.path.exists(run_id_path):
         try:
-            run_id = open(cfg.run_id_file, "r", encoding="utf-8").read().strip() or None
+            run_id = open(run_id_path, "r", encoding="utf-8").read().strip() or None
         except Exception:
             run_id = None
 
@@ -533,14 +624,27 @@ def main(cfg: TrainConfig):
         entity=cfg.wandb_entity,
         name=cfg.wandb_run_name,
         group=cfg.wandb_group,
-        config={**asdict(cfg), **meta},
+        config={**asdict(cfg), "run_id_file": run_id_path, **meta},
         id=run_id,
         resume="allow" if cfg.resume else None,
+        settings=wandb.Settings(start_method="thread"),
     )
 
+    # Define step metrics (avoids passing step=... and prevents monotonic step issues)
+    if wandb.run is not None:
+        wandb.define_metric("train/step")
+        wandb.define_metric("train/*", step_metric="train/step")
+        wandb.define_metric("perf/*", step_metric="train/step")
+        wandb.define_metric("data/*", step_metric="train/step")
+        wandb.define_metric("loss/*", step_metric="train/step")
+        wandb.define_metric("epoch")
+        wandb.define_metric("epoch/*", step_metric="epoch")
+
     try:
-        with open(cfg.run_id_file, "w", encoding="utf-8") as f:
-            f.write(wandb.run.id)
+        os.makedirs(os.path.dirname(run_id_path), exist_ok=True)
+        with open(run_id_path, "w", encoding="utf-8") as f:
+            if wandb.run is not None:
+                f.write(wandb.run.id)
     except Exception:
         pass
 
@@ -564,13 +668,32 @@ def main(cfg: TrainConfig):
                 train_t0=train_t0,
             )
 
-            wandb.log(
-                {"epoch": epoch, **{f"epoch/{k}": v for k, v in epoch_stats.items()}},
-                step=global_step,
-            )
+            if wandb.run is not None:
+                wandb.log(
+                    {"epoch": epoch, **{f"epoch/{k}": v for k, v in epoch_stats.items()}},
+                )
 
+        # Final save:
+        # - keep your original filename pattern ckpt_step_{max_steps}.pt
+        # - but store step as the last executed index, next_step as max_steps
+        last_step = max(0, int(global_step) - 1)
         final_path = os.path.join(cfg.save_dir, f"ckpt_step_{cfg.max_steps}.pt")
-        save_ckpt(final_path, model, opt, step=cfg.max_steps, meta=meta)
+        os.makedirs(cfg.save_dir, exist_ok=True)
+        torch.save(
+            {
+                "step": int(last_step),
+                "next_step": int(global_step),
+                "model": model.state_dict(),
+                "opt": opt.state_dict(),
+                "meta": meta,
+            },
+            final_path,
+        )
+
+        if wandb.run is not None:
+            art = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model", metadata={"step": int(global_step)})
+            art.add_file(final_path)
+            wandb.log_artifact(art)
 
     finally:
         wandb.finish()
@@ -578,7 +701,7 @@ def main(cfg: TrainConfig):
 
 if __name__ == "__main__":
     cfg = TrainConfig(
-        base_path="./example_dataset/strawberry_real",
+        base_path="/home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real",
         mesh_subdir="mesh",
         mesh_name="strawberry.stl",
         control_subdir="control",
@@ -586,8 +709,8 @@ if __name__ == "__main__":
         mesh_sampling="surface",
         mesh_points=8192,
 
-        wandb_project="pointcloud-action_fulldataset_batchsize_four",
-        wandb_run_name=None,
+        wandb_project="pointcloud-action_fulldataset_batchsize_four_new",
+        wandb_run_name="test",
         head_names=("n2", "n5", "lh", "rh"),
         groups=("n2", "n5", "lh", "rh"),
         missing_policy="initial",
@@ -604,5 +727,12 @@ if __name__ == "__main__":
         device="cuda",
         head_weights=(1.0,),
         drop_last=False,
+        save_dir='checkpointnewest',
+        loss_type="rmse",
+        loss_normalize="per_dim_rms",
+        loss_min_scale=1e-3,
+        loss_eps=1e-6,
+        loss_huber_beta=1.0,
+        loss_detach_scale=True,
     )
     main(cfg)

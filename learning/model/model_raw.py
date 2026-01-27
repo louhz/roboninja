@@ -354,12 +354,36 @@ class MultiModalPolicy(nn.Module):
 
 @dataclass
 class MultiHeadLossConfig:
-    loss_type: str = "mse"  # 'mse' or 'smooth_l1' or 'l1'
+    # Base loss on (optionally) normalized targets
+    # - "mse": mean squared error
+    # - "rmse": sqrt(mse + eps)  (often much more readable than mse)
+    # - "smooth_l1": huber-style
+    # - "l1": mean absolute error
+    loss_type: str = "rmse"
+
+    # Normalization mode (recommended: "per_dim_rms")
+    # - "none": original behavior (but can be tiny)
+    # - "per_head_rms": one scalar scale per head
+    # - "per_dim_rms": one scale per output dimension in the head  (best default)
+    # - "per_dim_std": one std scale per output dimension
+    normalize: str = "per_dim_rms"
+
+    # Multi-head weights
     weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+
+    # Numerics
+    eps: float = 1e-6
+    min_scale: float = 1e-3  # clamp scale to avoid division blow-ups
+
+    # SmoothL1 / Huber parameter (only used if loss_type="smooth_l1")
+    huber_beta: float = 1.0
+
+    # Detach target stats when computing normalization scale (recommended True)
+    detach_scale: bool = True
 
 
 class MultiHeadLoss(nn.Module):
-    """Computes separate losses for 4 heads and a weighted sum."""
+    """Computes separate losses for 4 heads and a weighted sum, with optional normalization."""
 
     def __init__(self, head_names: Sequence[str], cfg: MultiHeadLossConfig = MultiHeadLossConfig()) -> None:
         super().__init__()
@@ -369,14 +393,26 @@ class MultiHeadLoss(nn.Module):
         self.cfg = cfg
 
         lt = cfg.loss_type.lower()
+        self._take_sqrt = False  # for RMSE
         if lt == "mse":
-            self._loss_fn = nn.MSELoss(reduction="mean")
+            self._base = "mse"
+        elif lt == "rmse":
+            self._base = "mse"
+            self._take_sqrt = True
         elif lt in ("smooth_l1", "huber"):
-            self._loss_fn = nn.SmoothL1Loss(reduction="mean")
+            self._base = "smooth_l1"
         elif lt == "l1":
-            self._loss_fn = nn.L1Loss(reduction="mean")
+            self._base = "l1"
         else:
-            raise ValueError(f"Unknown loss_type '{cfg.loss_type}'")
+            raise ValueError(f"Unknown loss_type '{cfg.loss_type}' (use mse|rmse|smooth_l1|l1)")
+
+        nm = cfg.normalize.lower()
+        if nm not in ("none", "per_head_rms", "per_dim_rms", "per_dim_std"):
+            raise ValueError(
+                f"Unknown normalize='{cfg.normalize}' "
+                "(use none|per_head_rms|per_dim_rms|per_dim_std)"
+            )
+        self._norm_mode = nm
 
         if len(cfg.weights) != 4:
             raise ValueError("weights must have length 4")
@@ -384,17 +420,63 @@ class MultiHeadLoss(nn.Module):
 
     @torch.no_grad()
     def _ensure_device(self, preds: Mapping[str, Tensor]) -> None:
-        # keep weights on same device as preds
         dev = next(iter(preds.values())).device
         if self.weights.device != dev:
             self.weights = self.weights.to(dev)
+
+    def _compute_scale(self, t: Tensor) -> Tensor:
+        """Returns a broadcastable scale tensor (scalar, or shape (1,...,1,D))."""
+        cfg = self.cfg
+        x = t.detach() if cfg.detach_scale else t
+
+        # reduce over all dims except the last (the feature dimension)
+        reduce_dims = tuple(range(x.dim() - 1))
+
+        if self._norm_mode == "none":
+            # scale=1 (no normalization)
+            return torch.ones((), device=t.device, dtype=t.dtype)
+
+        if self._norm_mode == "per_head_rms":
+            # scalar scale per head
+            rms = torch.sqrt(torch.mean(x * x) + cfg.eps)
+            return rms.clamp_min(cfg.min_scale)
+
+        if self._norm_mode == "per_dim_rms":
+            # per-dimension RMS, keepdim so it broadcasts over batch/time dims
+            rms = torch.sqrt(torch.mean(x * x, dim=reduce_dims, keepdim=True) + cfg.eps)
+            return rms.clamp_min(cfg.min_scale)
+
+        if self._norm_mode == "per_dim_std":
+            std = x.std(dim=reduce_dims, unbiased=False, keepdim=True)
+            return std.clamp_min(cfg.min_scale)
+
+        # should never hit
+        return torch.ones((), device=t.device, dtype=t.dtype)
+
+    def _loss(self, p: Tensor, t: Tensor) -> Tensor:
+        """Base loss between p and t (already normalized if desired)."""
+        cfg = self.cfg
+        if self._base == "mse":
+            l = F.mse_loss(p, t, reduction="mean")
+            if self._take_sqrt:
+                # RMSE (or NRMSE if p,t were normalized)
+                l = torch.sqrt(l + cfg.eps)
+            return l
+
+        if self._base == "smooth_l1":
+            return F.smooth_l1_loss(p, t, reduction="mean", beta=cfg.huber_beta)
+
+        if self._base == "l1":
+            return F.l1_loss(p, t, reduction="mean")
+
+        raise RuntimeError("Unexpected base loss")
 
     def forward(
         self,
         preds: Mapping[str, Tensor],
         targets: Mapping[str, Tensor],
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
-        """Returns: total_loss, loss_by_head"""
+        """Returns: total_loss, loss_by_head (normalized if cfg.normalize != 'none')."""
         for name in self.head_names:
             if name not in preds:
                 raise KeyError(f"preds missing head '{name}'")
@@ -403,14 +485,28 @@ class MultiHeadLoss(nn.Module):
 
         self._ensure_device(preds)
 
-        loss_by_head: Dict[str, Tensor] = {}
-        total = torch.zeros((), device=next(iter(preds.values())).device)
-        for i, name in enumerate(self.head_names):
-            l = self._loss_fn(preds[name], targets[name])
-            loss_by_head[name] = l
-            total = total + self.weights[i] * l
-        return total, loss_by_head
+        dev = next(iter(preds.values())).device
+        dtype = next(iter(preds.values())).dtype
 
+        loss_by_head: Dict[str, Tensor] = {}
+        total = torch.zeros((), device=dev, dtype=dtype)
+
+        for i, name in enumerate(self.head_names):
+            p = preds[name]
+            t = targets[name]
+
+            if p.shape != t.shape:
+                raise ValueError(f"Shape mismatch for head '{name}': preds {p.shape} vs targets {t.shape}")
+
+            scale = self._compute_scale(t)  # broadcastable
+            p_n = p / scale
+            t_n = t / scale
+
+            l = self._loss(p_n, t_n)
+            loss_by_head[name] = l
+            total = total + self.weights[i].to(dtype=dtype) * l
+
+        return total, loss_by_head
 
 def split_action_vector(
     action: Tensor,
