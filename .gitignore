@@ -147,7 +147,7 @@ dmypy.json
 
 generated*
 
-*.mp4
+
 
 wandb_run_id.txt
 *].txt
@@ -158,7 +158,7 @@ env*
 
 *.csv
 
-videos
+
 
 potato
 
