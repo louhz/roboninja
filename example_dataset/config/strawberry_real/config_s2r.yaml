@@ -10,10 +10,10 @@ backup: true
 dry_run: false
 report_csv: /home/louhz/Desktop/Rss/roboninja/sim2real/mesh_report.csv
 
-# Per-episode lists (1-based episode id -> 0-based list index)
+# Per-episode lists (1-based episode id -> 0-based list index) # based on foundationpose and point cloud observation
 scales: 
   - [0.5, 0.5, 0.5]  # IT IS ACTUALLY 0.05 TO 0.1 I ALREADY DID IT MANUALLY
 
   
 offsets:
-  - [0.44, -0.44, 0.42]     # for episodes_1
+  - [0.49, -0.46, 0.41]     # for episodes_1

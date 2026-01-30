@@ -14,6 +14,19 @@ n_iters: 300
 horizon_action: 60
 
 
+
+
+wandb:
+  project: roboninja-cut-half   # <-- set your project name here
+
+# whatever you already had here is fine; project can live here OR in wandb.project
+
+
+video:
+  save: true
+  dir: ${hydra:runtime.output_dir}/videos   # local path, NOT wandb
+  fps: 10
+
 # key parameter for training
 
 # add some randomnization here

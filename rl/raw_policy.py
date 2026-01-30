@@ -40,6 +40,57 @@ OPTIMS = {
 }
 
 
+
+def _to_uint8(img: np.ndarray) -> np.ndarray:
+    """Convert an HWC image to uint8 for video writing."""
+    x = np.asarray(img)
+    if x.dtype == np.uint8:
+        return x
+
+    # float images: assume either [0,1] or [0,255]
+    if np.issubdtype(x.dtype, np.floating):
+        mx = np.nanmax(x)
+        if mx <= 1.0:
+            x = x * 255.0
+
+    x = np.clip(x, 0, 255).astype(np.uint8)
+    return x
+
+
+def save_rollout_video(render_images, out_dir: str, basename: str, fps: int = 10) -> str:
+    """
+    Save rollout locally (NOT to wandb).
+    Tries mp4 (needs ffmpeg via imageio), falls back to gif, then to compressed npz.
+    Returns the saved path.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    frames = [_to_uint8(im) for im in render_images]
+
+    mp4_path = os.path.join(out_dir, f"{basename}.mp4")
+    gif_path = os.path.join(out_dir, f"{basename}.gif")
+    npz_path = os.path.join(out_dir, f"{basename}.npz")
+
+    # 1) Try MP4
+    try:
+        import imageio.v2 as imageio
+        imageio.mimsave(mp4_path, frames, fps=fps)  # requires ffmpeg backend for mp4
+        return mp4_path
+    except Exception:
+        pass
+
+    # 2) Try GIF
+    try:
+        import imageio.v2 as imageio
+        imageio.mimsave(gif_path, frames, fps=fps)
+        return gif_path
+    except Exception:
+        pass
+
+    # 3) Fallback: save raw frames (still “video”, just not encoded)
+    np.savez_compressed(npz_path, video=np.stack(frames, axis=0))
+    return npz_path
+
+
 # -----------------------------
 # Your forward/backward (same)
 # -----------------------------
@@ -139,6 +190,17 @@ class OptimizationWorkspace:
         output_dir = os.getcwd()
         save_path = os.path.join(output_dir, "optimization.pkl")
 
+
+        # Local video saving (NOT wandb upload)
+        save_videos = bool(OmegaConf.select(self.cfg, "video.save", default=True))
+        video_fps = int(OmegaConf.select(self.cfg, "video.fps", default=10))
+
+        # Where to write videos:
+        # - If config gives a path, use it
+        # - Else default to <hydra_run_dir>/videos (this is OUTSIDE wandb.run.dir)
+        video_dir = OmegaConf.select(self.cfg, "video.dir", default=None)
+        if video_dir is None:
+            video_dir = os.path.join(output_dir, "videos")
         if os.path.exists(save_path):
             print(f"Found existing {save_path}, skipping.")
             return
@@ -149,12 +211,28 @@ class OptimizationWorkspace:
         knife = taichi_env.agent.effectors[0]
 
         # wandb
+        # wandb
         wandb_run = None
         if bool(self.cfg.log_wandb):
+            # Convert cfg.logging to a real dict (so we can safely insert defaults)
+            wandb_kwargs = {}
+            if hasattr(self.cfg, "logging") and self.cfg.logging is not None:
+                wandb_kwargs = OmegaConf.to_container(self.cfg.logging, resolve=True)
+
+            # Prefer cfg.wandb.project, otherwise cfg.wandb_project
+            wandb_project = OmegaConf.select(self.cfg, "wandb.project", default=None)
+            if wandb_project is None:
+                wandb_project = OmegaConf.select(self.cfg, "wandb_project", default=None)
+
+            # Only set project if not already provided in cfg.logging
+            if wandb_project is not None and "project" not in wandb_kwargs:
+                wandb_kwargs["project"] = wandb_project
+
             wandb_run = wandb.init(
                 config=OmegaConf.to_container(self.cfg, resolve=True),
-                **self.cfg.logging,
+                **wandb_kwargs,
             )
+
 
         # init actions from cfg
         init_action_p = np.array(self.cfg.init_action_p, dtype=np.float32)
@@ -202,23 +280,37 @@ class OptimizationWorkspace:
             self.log_console(taichi_env, knife, iteration, loss_obj, forward_s, backward_s, current_actions)
 
             # wandb log (only send video when rendered)
+            render_images = fwd.get("render_images", [])
+
+            # Save locally when rendered
+            video_path = None
+            if render and save_videos and len(render_images) > 0:
+                video_path = save_rollout_video(
+                    render_images=render_images,
+                    out_dir=video_dir,
+                    basename=f"iter_{iteration:04d}",
+                    fps=video_fps,
+                )
+
+            # wandb log (NO video upload)
             if wandb_run is not None:
                 log_dict = {
                     "loss": _loss_scalar(loss_obj),
                     "time/forward_s": forward_s,
                     "time/backward_s": backward_s,
                 }
+
                 if isinstance(loss_obj, dict):
                     for k, v in loss_obj.items():
                         if isinstance(v, (int, float, np.floating)):
                             log_dict[f"loss/{k}"] = float(v)
 
-                render_images = fwd.get("render_images", [])
-                if render and len(render_images) > 0:
-                    video = np.stack(render_images).transpose(0, 3, 1, 2)
-                    log_dict["video"] = wandb.Video(video, fps=10)
+                # Log only the path as text (won't upload the file)
+                if video_path is not None:
+                    log_dict["video_path"] = video_path
 
                 wandb_run.log(log_dict, step=iteration)
+
 
             # save selected info (BEFORE the step, so loss aligns with comp_actions)
             iter_ctx = {

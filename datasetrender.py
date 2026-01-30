@@ -300,11 +300,11 @@ OBJECT_MJCF_PATH = "./fruit_asset/fruit.xml"
 # --- END MODIFIED ---
 
 
-nova2_path = "outputs_trajectory/nova2.txt"
-nova5_path = "outputs_trajectory/nova5.txt"
-left_path  = "outputs_trajectory/left.txt"
-right_path = "outputs_trajectory/right.txt"
-video_out  = Path("renders") / "draw_strawberry.mp4"
+nova2_path = "/home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real/episodes_1/control/nova2.txt"
+nova5_path = "/home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real/episodes_1/control/nova5.txt"
+left_path  = "/home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real/episodes_1/control/left.txt"
+right_path = "/home/louhz/Desktop/Rss/roboninja/example_dataset/strawberry_real/episodes_1/control/right.txt"
+video_out  = Path("renders") / "draw_banana.mp4"
 
 if __name__ == "__main__":
     video_out.parent.mkdir(parents=True, exist_ok=True)
@@ -342,14 +342,32 @@ if __name__ == "__main__":
     else:
         print(f"[Warn] Object file not found, skipping: {OBJECT_MJCF_PATH}")
     # --- END MODIFIED ---
+
+
+    # ---------------------------
+    # Camera / video quality knobs
+    # ---------------------------
+    VIDEO_RES = (1920, 1080)          # 1080p (try 2560x1440 for 2K, 3840x2160 for 4K)
+    CAM_LOOKAT = np.array([0.5, 0, 0.5], dtype=np.float64)
+
+    # Original camera position (your current one)
+    CAM_POS_FAR = np.array([2.8, -3.5, 2.3], dtype=np.float64)
+
+    # < 1.0 => closer to lookat; e.g. 0.6 closer, 0.45 even closer
+    CAM_CLOSE_FACTOR = 0.55
+
+    # Move camera toward lookat while keeping the same viewing direction
+    CAM_POS = CAM_LOOKAT + CAM_CLOSE_FACTOR * (CAM_POS_FAR - CAM_LOOKAT)
+
     
     cam = scene.add_camera(
-        res=(960, 640),
-        pos=(2.8, -3.5, 2.3),
-        lookat=(0.0, 0.0, 0.5),
-        fov=35,
+        res=VIDEO_RES,
+        pos=tuple(CAM_POS),
+        lookat=tuple(CAM_LOOKAT),
+        fov=35,          # keep same; reduce (e.g. 28-32) if you want less wide-angle distortion
         GUI=False,
     )
+
     scene.build()
      
 

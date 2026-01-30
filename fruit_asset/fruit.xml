@@ -23,7 +23,7 @@
     <!-- Replace these with your actual mesh paths -->
     <mesh name="table_mesh"      file="meshes/table.stl"/>
     <mesh name="knife_mesh"      file="meshes/knife.stl"/>
-    <mesh name="strawberry_mesh" file="meshes/strawberry.stl"/>
+    <mesh name="strawberry_mesh" file="meshes/banana.stl"/>
 
     <material name="mat_table"      rgba="0.75 0.75 0.75 1"/>
     <material name="mat_knife"      rgba="0.70 0.70 0.70 1"/>
@@ -131,7 +131,7 @@
     <!-- pos="3.1 -4.1 3.6" -->
     <body name="strawberry"
           pos="3.1 -4.1 3.9"
-          quat="0.7 0.7 0 0">
+          quat="1 0 0 0">
       <joint name="strawberry_free" type="free" damping="0.5" armature="0.001"/>
 
       <!-- Rough inertial; update if you know mass/inertia -->

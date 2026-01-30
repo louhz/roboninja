@@ -116,14 +116,10 @@ def _mlp(
                 layers.append(nn.Dropout(p=dropout))
     return nn.Sequential(*layers)
 
-
 class PointNetEncoder(nn.Module):
-    """A lightweight PointNet-style encoder with optional xyz positional encoding.
-
-    Input: points: (B, N, C) where C >= 3 and points[..., :3] are xyz.
-    Output: global feature: (B, out_dim)
-
-    If C>3 (e.g., rgb, intensity), those channels are concatenated after xyz encoding.
+    """
+    PointNet-style encoder that can keep relative geometry (centered xyz)
+    while ALSO exposing absolute translation (xyz_mean) to the policy.
     """
 
     def __init__(
@@ -135,6 +131,14 @@ class PointNetEncoder(nn.Module):
         per_point_hidden: Sequence[int] = (128, 256),
         pooling: str = "max",
         dropout: float = 0.0,
+        center_xyz: bool = True,
+        xyz_scale: float = 1.0,
+
+        # NEW: keep absolute mean
+        add_xyz_mean: bool = True,
+        mean_pe: Optional[FourierFeatures] = None,   # optional PE just for the mean
+        mean_scale: float = 1.0,                     # separate scale for absolute mean
+        global_hidden: Sequence[int] = (256,),
     ) -> None:
         super().__init__()
         if point_dim < 3:
@@ -143,12 +147,38 @@ class PointNetEncoder(nn.Module):
         self.out_dim = int(out_dim)
         self.xyz_pe = xyz_pe
         self.pooling = pooling
+        self.center_xyz = bool(center_xyz)
+        self.xyz_scale = float(xyz_scale)
 
+        self.add_xyz_mean = bool(add_xyz_mean)
+        self.mean_pe = mean_pe
+        self.mean_scale = float(mean_scale)
+
+        # per-point input dim
         in_dim = (xyz_pe.out_dim if xyz_pe is not None else 3) + (point_dim - 3)
-        self.per_point = _mlp(in_dim, per_point_hidden, out_dim, dropout=dropout, layer_norm=True)
 
-    def forward(self, points: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        """points: (B,N,C); mask: (B,N) bool where True means valid."""
+        # IMPORTANT: make per-point output a "point_feat_dim", then fuse with mean -> out_dim
+        point_feat_dim = out_dim  # you can change this if you want a wider internal feature
+        self.per_point = _mlp(in_dim, per_point_hidden, point_feat_dim, dropout=dropout, layer_norm=True)
+
+        if self.add_xyz_mean:
+            mean_dim = (mean_pe.out_dim if mean_pe is not None else 3)
+            self.global_head = _mlp(point_feat_dim + mean_dim, global_hidden, out_dim, dropout=dropout, layer_norm=True)
+        else:
+            self.global_head = nn.Identity()
+
+    def _masked_mean_xyz(self, xyz: Tensor, mask: Optional[Tensor]) -> Tensor:
+        # returns (B, 1, 3)
+        if mask is None:
+            return xyz.mean(dim=1, keepdim=True)
+        B, N, _ = xyz.shape
+        if mask.shape != (B, N):
+            raise ValueError(f"mask must be (B,N) but got {mask.shape}")
+        m = mask.unsqueeze(-1).to(xyz.dtype)
+        denom = m.sum(dim=1, keepdim=True).clamp_min(1.0)
+        return (xyz * m).sum(dim=1, keepdim=True) / denom
+
+    def forward(self, points: Tensor, mask: Optional[Tensor] = None, *, return_xyz_mean: bool = False):
         if points.dim() != 3:
             raise ValueError(f"points must be (B,N,C), got {points.shape}")
         B, N, C = points.shape
@@ -158,26 +188,26 @@ class PointNetEncoder(nn.Module):
         xyz = points[..., :3]
         extra = points[..., 3:] if C > 3 else None
 
-        if self.xyz_pe is not None:
-            xyz_enc = self.xyz_pe(xyz)  # (B,N,pe_dim)
-        else:
-            xyz_enc = xyz
+        # Always compute xyz_mean if we might want absolute pose
+        xyz_mean = self._masked_mean_xyz(xyz, mask)  # (B,1,3)
 
-        if extra is not None and extra.numel() > 0:
-            x = torch.cat([xyz_enc, extra], dim=-1)
-        else:
-            x = xyz_enc
+        # Relative coordinates for per-point processing (optional)
+        xyz_rel = (xyz - xyz_mean) if self.center_xyz else xyz
 
-        # Apply MLP point-wise. Flatten B*N for speed.
+        # Scale for PE variation / conditioning
+        if self.xyz_scale != 1.0:
+            xyz_rel = xyz_rel * self.xyz_scale
+
+        # Encode xyz
+        xyz_enc = self.xyz_pe(xyz_rel) if self.xyz_pe is not None else xyz_rel
+
+        x = torch.cat([xyz_enc, extra], dim=-1) if (extra is not None and extra.numel() > 0) else xyz_enc
         x = x.reshape(B * N, -1)
         x = self.per_point(x)
         x = x.reshape(B, N, -1)
 
+        # Pool with mask
         if mask is not None:
-            # mask invalid points before pooling
-            if mask.shape != (B, N):
-                raise ValueError(f"mask must be (B,N) but got {mask.shape}")
-            # set invalid positions to very negative for max pooling
             if self.pooling == "max":
                 x = x.masked_fill(~mask.unsqueeze(-1), float("-inf"))
             else:
@@ -185,7 +215,6 @@ class PointNetEncoder(nn.Module):
 
         if self.pooling == "max":
             global_feat = torch.max(x, dim=1).values
-            # If all points were invalid, max becomes -inf; replace with zeros.
             global_feat = torch.where(torch.isfinite(global_feat), global_feat, torch.zeros_like(global_feat))
         elif self.pooling == "mean":
             if mask is None:
@@ -195,7 +224,28 @@ class PointNetEncoder(nn.Module):
                 global_feat = x.sum(dim=1) / denom
         else:
             raise ValueError(f"Unknown pooling '{self.pooling}' (use 'max' or 'mean')")
+
+        # NEW: fuse absolute mean (global frame translation) AFTER pooling
+        if self.add_xyz_mean:
+            mean_abs = xyz_mean.squeeze(1)  # (B,3)
+
+            # Optional separate scaling + PE for mean
+            if self.mean_scale != 1.0:
+                mean_abs = mean_abs * self.mean_scale
+
+            if self.mean_pe is not None:
+                mean_enc = self.mean_pe(mean_abs.unsqueeze(1)).squeeze(1)  # (B, mean_pe_dim)
+            else:
+                mean_enc = mean_abs  # (B,3)
+
+            global_feat = self.global_head(torch.cat([global_feat, mean_enc], dim=-1))
+        else:
+            global_feat = self.global_head(global_feat)
+
+        if return_xyz_mean:
+            return global_feat, xyz_mean.squeeze(1)
         return global_feat
+
 
 
 class VectorEncoder(nn.Module):
@@ -230,7 +280,7 @@ class VectorEncoder(nn.Module):
 
 
 class MultiHeadOutput(nn.Module):
-    """Four separate heads on top of a shared trunk."""
+    """N separate heads on top of a shared trunk."""
 
     def __init__(
         self,
@@ -242,12 +292,13 @@ class MultiHeadOutput(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        if len(head_dims) != 4:
-            raise ValueError(f"Expected 4 heads, got {len(head_dims)}")
+        if len(head_dims) < 1:
+            raise ValueError("Expected at least 1 head")
+
         if head_names is None:
-            head_names = [f"head{i}" for i in range(4)]
-        if len(head_names) != 4:
-            raise ValueError(f"Expected 4 head names, got {len(head_names)}")
+            head_names = [f"head{i}" for i in range(len(head_dims))]
+        if len(head_names) != len(head_dims):
+            raise ValueError(f"head_names ({len(head_names)}) must match head_dims ({len(head_dims)})")
 
         self.head_names = list(head_names)
         self.head_dims = [int(d) for d in head_dims]
@@ -261,8 +312,9 @@ class MultiHeadOutput(nn.Module):
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         return {name: head(x) for name, head in self.heads.items()}
+
 class MultiModalPolicy(nn.Module):
-    """(Optionally) Point cloud only -> shared latent -> 4 action heads.
+    """(Optionally) Point cloud only -> shared latent -> N action heads.
 
     If ignore_joint=True, the model does NOT use the joint input at all.
     """
@@ -283,7 +335,13 @@ class MultiModalPolicy(nn.Module):
         head_names: Optional[Sequence[str]] = None,
         head_hidden: Sequence[int] = (256, 256),
         head_dropout: float = 0.0,
-        ignore_joint: bool = False,   # <--- NEW
+        ignore_joint: bool = False,
+
+        # ---- NEW knobs to make PC gradients stronger / more visible
+        pc_center_xyz: bool = True,
+        pc_xyz_scale: float = 1.0,
+        pc_feat_scale: float = 1.0,      # e.g. 2.0 to boost PC influence/gradients
+        use_modality_ln: bool = True,    # normalize modality feature scales
     ) -> None:
         super().__init__()
         if point_dim < 3:
@@ -291,12 +349,14 @@ class MultiModalPolicy(nn.Module):
 
         self.ignore_joint = bool(ignore_joint)
 
-        # NOTE: only require joint_dim if we actually use joints
         if not self.ignore_joint and joint_dim <= 0:
             raise ValueError("joint_dim must be > 0 unless ignore_joint=True")
 
         self.joint_dim = int(joint_dim)
         self.point_dim = int(point_dim)
+
+        self.pc_feat_scale = float(pc_feat_scale)
+        self.use_modality_ln = bool(use_modality_ln)
 
         # ---- encoders ----
         if not self.ignore_joint:
@@ -308,9 +368,11 @@ class MultiModalPolicy(nn.Module):
                 dropout=trunk_dropout,
             )
             trunk_in = joint_feat_dim + point_feat_dim
+            self.joint_ln = nn.LayerNorm(joint_feat_dim) if self.use_modality_ln else nn.Identity()
         else:
             self.joint_enc = None
             trunk_in = point_feat_dim
+            self.joint_ln = None
 
         self.pc_enc = PointNetEncoder(
             point_dim=point_dim,
@@ -319,7 +381,10 @@ class MultiModalPolicy(nn.Module):
             per_point_hidden=(128, 256),
             pooling="max",
             dropout=trunk_dropout,
+            center_xyz=pc_center_xyz,
+            xyz_scale=pc_xyz_scale,
         )
+        self.pc_ln = nn.LayerNorm(point_feat_dim) if self.use_modality_ln else nn.Identity()
 
         # ---- trunk + heads ----
         self.trunk = _mlp(trunk_in, trunk_hidden, latent_dim, dropout=trunk_dropout, layer_norm=True)
@@ -332,14 +397,23 @@ class MultiModalPolicy(nn.Module):
             dropout=head_dropout,
         )
 
+    @property
+    def head_names(self) -> List[str]:
+        return list(self.heads.head_names)
+
     def forward(
         self,
         *,
-        joint: Optional[Tensor],      # allow None when ignore_joint=True
+        joint: Optional[Tensor],
         point_cloud: Tensor,
         point_mask: Optional[Tensor] = None,
     ) -> Dict[str, Tensor]:
         pc_feat = self.pc_enc(point_cloud, mask=point_mask)
+        pc_feat = self.pc_ln(pc_feat)
+
+        # ---- NEW: boost PC feature contribution (also boosts gradients back into PC encoder)
+        if self.pc_feat_scale != 1.0:
+            pc_feat = pc_feat * self.pc_feat_scale
 
         if self.ignore_joint:
             fused = pc_feat
@@ -347,53 +421,43 @@ class MultiModalPolicy(nn.Module):
             if joint is None:
                 raise ValueError("joint must be provided when ignore_joint=False")
             joint_feat = self.joint_enc(joint)
+            joint_feat = self.joint_ln(joint_feat)
             fused = torch.cat([joint_feat, pc_feat], dim=-1)
 
         latent = self.trunk(fused)
         return self.heads(latent)
 
+
 @dataclass
 class MultiHeadLossConfig:
-    # Base loss on (optionally) normalized targets
-    # - "mse": mean squared error
-    # - "rmse": sqrt(mse + eps)  (often much more readable than mse)
-    # - "smooth_l1": huber-style
-    # - "l1": mean absolute error
     loss_type: str = "rmse"
-
-    # Normalization mode (recommended: "per_dim_rms")
-    # - "none": original behavior (but can be tiny)
-    # - "per_head_rms": one scalar scale per head
-    # - "per_dim_rms": one scale per output dimension in the head  (best default)
-    # - "per_dim_std": one std scale per output dimension
     normalize: str = "per_dim_rms"
 
     # Multi-head weights
-    weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    weights: Union[Sequence[float], Mapping[str, float]] = (1.0, 1.0, 1.0, 1.0)
 
-    # Numerics
     eps: float = 1e-6
-    min_scale: float = 1e-3  # clamp scale to avoid division blow-ups
-
-    # SmoothL1 / Huber parameter (only used if loss_type="smooth_l1")
+    min_scale: float = 1e-3
+    max_scale: Optional[float] = None   # NEW: clamp large scales to avoid vanishing gradients
     huber_beta: float = 1.0
-
-    # Detach target stats when computing normalization scale (recommended True)
     detach_scale: bool = True
+
+    # Optional: skip certain heads in loss (useful if you keep outputs but "remove" training)
+    ignore_heads: Tuple[str, ...] = ()
 
 
 class MultiHeadLoss(nn.Module):
-    """Computes separate losses for 4 heads and a weighted sum, with optional normalization."""
+    """Computes separate losses per head and a weighted sum, with optional normalization."""
 
     def __init__(self, head_names: Sequence[str], cfg: MultiHeadLossConfig = MultiHeadLossConfig()) -> None:
         super().__init__()
-        if len(head_names) != 4:
-            raise ValueError("MultiHeadLoss expects exactly 4 head names")
+        if len(head_names) < 1:
+            raise ValueError("MultiHeadLoss expects at least 1 head name")
         self.head_names = list(head_names)
         self.cfg = cfg
 
         lt = cfg.loss_type.lower()
-        self._take_sqrt = False  # for RMSE
+        self._take_sqrt = False
         if lt == "mse":
             self._base = "mse"
         elif lt == "rmse":
@@ -408,15 +472,18 @@ class MultiHeadLoss(nn.Module):
 
         nm = cfg.normalize.lower()
         if nm not in ("none", "per_head_rms", "per_dim_rms", "per_dim_std"):
-            raise ValueError(
-                f"Unknown normalize='{cfg.normalize}' "
-                "(use none|per_head_rms|per_dim_rms|per_dim_std)"
-            )
+            raise ValueError(f"Unknown normalize='{cfg.normalize}'")
         self._norm_mode = nm
 
-        if len(cfg.weights) != 4:
-            raise ValueError("weights must have length 4")
-        self.register_buffer("weights", torch.tensor(cfg.weights, dtype=torch.float32), persistent=False)
+        # build weights aligned to head_names
+        if isinstance(cfg.weights, Mapping):
+            w_list = [float(cfg.weights.get(name, 1.0)) for name in self.head_names]
+        else:
+            w_list = [float(x) for x in cfg.weights]
+            if len(w_list) != len(self.head_names):
+                raise ValueError("weights length must match number of heads (or pass a dict)")
+
+        self.register_buffer("weights", torch.tensor(w_list, dtype=torch.float32), persistent=False)
 
     @torch.no_grad()
     def _ensure_device(self, preds: Mapping[str, Tensor]) -> None:
@@ -425,50 +492,36 @@ class MultiHeadLoss(nn.Module):
             self.weights = self.weights.to(dev)
 
     def _compute_scale(self, t: Tensor) -> Tensor:
-        """Returns a broadcastable scale tensor (scalar, or shape (1,...,1,D))."""
         cfg = self.cfg
         x = t.detach() if cfg.detach_scale else t
-
-        # reduce over all dims except the last (the feature dimension)
         reduce_dims = tuple(range(x.dim() - 1))
 
         if self._norm_mode == "none":
-            # scale=1 (no normalization)
             return torch.ones((), device=t.device, dtype=t.dtype)
 
         if self._norm_mode == "per_head_rms":
-            # scalar scale per head
-            rms = torch.sqrt(torch.mean(x * x) + cfg.eps)
-            return rms.clamp_min(cfg.min_scale)
+            scale = torch.sqrt(torch.mean(x * x) + cfg.eps)
+        elif self._norm_mode == "per_dim_rms":
+            scale = torch.sqrt(torch.mean(x * x, dim=reduce_dims, keepdim=True) + cfg.eps)
+        elif self._norm_mode == "per_dim_std":
+            scale = x.std(dim=reduce_dims, unbiased=False, keepdim=True)
+        else:
+            scale = torch.ones((), device=t.device, dtype=t.dtype)
 
-        if self._norm_mode == "per_dim_rms":
-            # per-dimension RMS, keepdim so it broadcasts over batch/time dims
-            rms = torch.sqrt(torch.mean(x * x, dim=reduce_dims, keepdim=True) + cfg.eps)
-            return rms.clamp_min(cfg.min_scale)
-
-        if self._norm_mode == "per_dim_std":
-            std = x.std(dim=reduce_dims, unbiased=False, keepdim=True)
-            return std.clamp_min(cfg.min_scale)
-
-        # should never hit
-        return torch.ones((), device=t.device, dtype=t.dtype)
+        scale = scale.clamp_min(cfg.min_scale)
+        if cfg.max_scale is not None:
+            scale = scale.clamp_max(float(cfg.max_scale))
+        return scale
 
     def _loss(self, p: Tensor, t: Tensor) -> Tensor:
-        """Base loss between p and t (already normalized if desired)."""
         cfg = self.cfg
         if self._base == "mse":
             l = F.mse_loss(p, t, reduction="mean")
-            if self._take_sqrt:
-                # RMSE (or NRMSE if p,t were normalized)
-                l = torch.sqrt(l + cfg.eps)
-            return l
-
+            return torch.sqrt(l + cfg.eps) if self._take_sqrt else l
         if self._base == "smooth_l1":
             return F.smooth_l1_loss(p, t, reduction="mean", beta=cfg.huber_beta)
-
         if self._base == "l1":
             return F.l1_loss(p, t, reduction="mean")
-
         raise RuntimeError("Unexpected base loss")
 
     def forward(
@@ -476,48 +529,45 @@ class MultiHeadLoss(nn.Module):
         preds: Mapping[str, Tensor],
         targets: Mapping[str, Tensor],
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
-        """Returns: total_loss, loss_by_head (normalized if cfg.normalize != 'none')."""
-        for name in self.head_names:
+        self._ensure_device(preds)
+
+        ignore = set(self.cfg.ignore_heads)
+        loss_by_head: Dict[str, Tensor] = {}
+        total = torch.zeros((), device=next(iter(preds.values())).device, dtype=next(iter(preds.values())).dtype)
+
+        for i, name in enumerate(self.head_names):
+            if name in ignore:
+                continue
             if name not in preds:
                 raise KeyError(f"preds missing head '{name}'")
             if name not in targets:
                 raise KeyError(f"targets missing head '{name}'")
 
-        self._ensure_device(preds)
-
-        dev = next(iter(preds.values())).device
-        dtype = next(iter(preds.values())).dtype
-
-        loss_by_head: Dict[str, Tensor] = {}
-        total = torch.zeros((), device=dev, dtype=dtype)
-
-        for i, name in enumerate(self.head_names):
             p = preds[name]
             t = targets[name]
-
             if p.shape != t.shape:
                 raise ValueError(f"Shape mismatch for head '{name}': preds {p.shape} vs targets {t.shape}")
 
-            scale = self._compute_scale(t)  # broadcastable
+            scale = self._compute_scale(t)
             p_n = p / scale
             t_n = t / scale
 
             l = self._loss(p_n, t_n)
             loss_by_head[name] = l
-            total = total + self.weights[i].to(dtype=dtype) * l
+            total = total + self.weights[i].to(dtype=total.dtype) * l
 
         return total, loss_by_head
+
 
 def split_action_vector(
     action: Tensor,
     head_dims: Sequence[int],
     head_names: Sequence[str],
 ) -> Dict[str, Tensor]:
-    """Splits an action vector (B, sum(head_dims)) into a dict of 4 targets."""
     if action.dim() != 2:
         raise ValueError(f"action must be (B,D), got {action.shape}")
-    if len(head_dims) != 4 or len(head_names) != 4:
-        raise ValueError("Expected 4 head dims and 4 head names")
+    if len(head_dims) != len(head_names):
+        raise ValueError("head_dims and head_names must have the same length")
 
     total = sum(int(d) for d in head_dims)
     if action.shape[-1] != total:
@@ -526,7 +576,8 @@ def split_action_vector(
     outs: Dict[str, Tensor] = {}
     idx = 0
     for name, d in zip(head_names, head_dims):
-        outs[name] = action[:, idx : idx + d]
+        d = int(d)
+        outs[name] = action[:, idx: idx + d]
         idx += d
     return outs
 

@@ -20,6 +20,13 @@ Each observation only has ONE point cloud per episode.
     episode_002/
       ...
 """
+
+
+
+# dataloader action chunk
+
+
+
 from __future__ import annotations
 
 import ast
@@ -732,7 +739,7 @@ class PointCloudActionEpisodeDataset(Dataset):
                     method=self.sampling,
                 )
 
-            feat = _pack_features(pts, cols, nors, self.features)  # (N,F)
+            feat = pts  # (N,F)
             feat_out = self.pc_transform(feat) if self.pc_transform is not None else feat
             pc_tensor = (
                 torch.from_numpy(feat_out).float()
